@@ -1,0 +1,19 @@
+TAX INVOICE
+Alrajhi Auto Service Co. LLC
+VAT No: 300123456700003
+Riyadh, Saudi Arabia
+
+Invoice #: AR-INV-99812
+Date: 2025-06-20 10:04
+
+--------------------------------------------
+Description                          Amount
+--------------------------------------------
+Front brake pads replacement       1043.48
+VAT (15%)                           156.52
+--------------------------------------------
+TOTAL DUE                         SAR 1200.00
+--------------------------------------------
+
+Paid via card ending 4411 (MADA)
+Terms: Net-0

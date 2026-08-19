@@ -1,0 +1,11 @@
+ALFANAR FUEL STATION
+Riyadh - Olaya
+Receipt #: 20250614-3
+Date: 2025-06-14  08:22
+--------------------------------
+Fuel (91 Octane)  40.0 L
+Price/L                    6.25
+--------------------------------
+TOTAL                 SAR 250.00
+Payment: card *(last 4 not shown)*
+Thank you.
