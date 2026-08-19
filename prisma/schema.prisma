@@ -1,0 +1,125 @@
+// Prisma schema for the Darb Portal document ingestion + matching workflow.
+//
+// SQLite provider notes:
+// - Enums are declared here for schema clarity; Prisma stores them as TEXT
+//   under SQLite. TypeScript enum types are still generated on the client.
+// - Json is not supported on SQLite, so `DocumentMatch.signals` is stored as
+//   a String containing serialized JSON. Access it through the helpers in
+//   lib/db/match-signals.ts to keep serialization consistent.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../lib/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ── Domain ──────────────────────────────────────────────────────────────────
+
+model Client {
+  id           Int           @id @default(autoincrement())
+  name         String
+  emails       ClientEmail[]
+  transactions Transaction[]
+}
+
+/// Allowlist of sender email addresses trusted to submit documents for a client.
+/// The email webhook uses this table to scope which transactions a document may match.
+model ClientEmail {
+  id       Int    @id @default(autoincrement())
+  clientId Int
+  email    String @unique
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+}
+
+model Transaction {
+  id            Int             @id @default(autoincrement())
+  clientId      Int
+  cardLast4     String
+  driverPhone   String?
+  merchantName  String
+  amount        Int
+  currency      String          @default("SAR")
+  transactionAt DateTime
+  client        Client          @relation(fields: [clientId], references: [id])
+  documents     DocumentMatch[]
+
+  @@index([driverPhone])
+  @@index([clientId, transactionAt])
+  @@index([cardLast4])
+}
+
+// ── Ingestion ───────────────────────────────────────────────────────────────
+
+model Document {
+  id                   Int             @id @default(autoincrement())
+  source               DocumentSource
+  externalId           String          @unique // provider messageId / wamid
+  contentHash          String          @unique // sha256 of the file bytes
+  senderIdentifier     String                  // email address or E.164 phone
+  status               DocumentStatus  @default(RECEIVED)
+  // Extraction results — nullable until extraction runs
+  documentType         String?
+  merchantName         String?
+  vatNumber            String?
+  totalAmount          Int?
+  currency             String?
+  documentDate         DateTime?
+  cardLast4            String?
+  invoiceNumber        String?
+  rawText              String?
+  extractionConfidence Float?
+  errorMessage         String?
+  receivedAt           DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  matches              DocumentMatch[]
+
+  @@index([status])
+  @@index([senderIdentifier])
+}
+
+model DocumentMatch {
+  id            Int         @id @default(autoincrement())
+  documentId    Int
+  transactionId Int
+  confidence    Float
+  signals       String      // JSON-serialized Record<string, number>
+  status        MatchStatus @default(CANDIDATE)
+  decidedBy     String?
+  decidedAt     DateTime?
+  createdAt     DateTime    @default(now())
+  document      Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+
+  @@unique([documentId, transactionId])
+  @@index([transactionId, status])
+  @@index([documentId, status])
+  // A partial unique index for confirmed statuses is defined in the SQL
+  // migration because Prisma's schema DSL cannot represent partial indexes.
+}
+
+// ── Enums ───────────────────────────────────────────────────────────────────
+
+enum DocumentSource {
+  EMAIL
+  WHATSAPP
+}
+
+enum DocumentStatus {
+  RECEIVED
+  EXTRACTED
+  MATCHED
+  NEEDS_REVIEW
+  UNMATCHED
+  FAILED
+}
+
+enum MatchStatus {
+  CANDIDATE
+  AUTO_CONFIRMED
+  CONFIRMED
+  REJECTED
+}
