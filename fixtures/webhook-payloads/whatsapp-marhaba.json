@@ -1,0 +1,25 @@
+{
+  "entry": [
+    {
+      "changes": [
+        {
+          "value": {
+            "messages": [
+              {
+                "id": "wamid.marhaba_tip_1",
+                "from": "966501111111",
+                "timestamp": "1750163460",
+                "type": "image",
+                "image": {
+                  "id": "media_marhaba_tip",
+                  "mime_type": "image/jpeg",
+                  "sha256": "fixture"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

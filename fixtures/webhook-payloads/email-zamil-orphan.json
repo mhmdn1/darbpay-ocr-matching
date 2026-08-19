@@ -1,0 +1,14 @@
+{
+  "messageId": "msg_zamil_4471",
+  "from": "fleet@alrashed.example",
+  "to": "receipts@darb.example.com",
+  "subject": "FW: Tax Invoice ZS-2025-4471",
+  "receivedAt": "2025-06-14T14:00:00Z",
+  "attachments": [
+    {
+      "filename": "invoice-4471.pdf",
+      "contentType": "application/pdf",
+      "contentBase64": "WkFNSUwgU1RFRUwgSU5EVVNUUklFUwpUYXggSW52b2ljZTogWlMtMjAyNS00NDcxCkRhdGU6IDIwMjUtMDYtMTQKVkFUIE5vOiAzMDA3Nzc4ODk5MDAwMDMKCkZvcjogQWwgUmFzaGVkIExvZ2lzdGljcwotLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQpTdGVlbCBwbGF0ZSAoMTBtbSB4IDIwIHNoZWV0cykgICA4NjkuNTcKVkFUICgxNSUpICAgICAgICAgICAgICAgICAgICAgICAgMTMwLjQzCi0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tClRPVEFMICAgICAgICAgICAgICAgICAgICAgICAgICBTQVIgMTAwMC4wMAotLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQoKUGF5bWVudDogQkFOSyBUUkFOU0ZFUiAobm8gY2FyZCkK"
+    }
+  ]
+}

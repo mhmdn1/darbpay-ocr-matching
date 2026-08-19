@@ -1,0 +1,25 @@
+{
+  "entry": [
+    {
+      "changes": [
+        {
+          "value": {
+            "messages": [
+              {
+                "id": "wamid.alfanar_amb_1",
+                "from": "966501111111",
+                "timestamp": "1749888240",
+                "type": "image",
+                "image": {
+                  "id": "media_alfanar_amb",
+                  "mime_type": "image/jpeg",
+                  "sha256": "fixture"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

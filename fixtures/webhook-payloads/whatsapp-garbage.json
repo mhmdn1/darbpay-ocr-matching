@@ -1,0 +1,25 @@
+{
+  "entry": [
+    {
+      "changes": [
+        {
+          "value": {
+            "messages": [
+              {
+                "id": "wamid.garbage_1",
+                "from": "966501111111",
+                "timestamp": "1750230000",
+                "type": "image",
+                "image": {
+                  "id": "media_garbage",
+                  "mime_type": "image/jpeg",
+                  "sha256": "fixture"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

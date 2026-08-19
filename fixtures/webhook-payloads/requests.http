@@ -1,0 +1,52 @@
+# One-line-per-request .http file for VS Code REST Client, JetBrains HTTP
+# Client, or the `httpyac` CLI. Point PORT at your `next dev` port.
+
+@baseUrl = http://localhost:3000
+
+### 1. EMAIL — Alrajhi tax invoice (should AUTO_MATCH → tx #4, SAR 1200)
+POST {{baseUrl}}/api/webhooks/email
+Content-Type: application/json
+
+< ./email-alrajhi.json
+
+### 2. EMAIL — Zamil Steel invoice for an unknown vendor (should UNMATCH)
+POST {{baseUrl}}/api/webhooks/email
+Content-Type: application/json
+
+< ./email-zamil-orphan.json
+
+### 3. WHATSAPP — Alfanar Fuel receipt (should NEEDS_REVIEW — tied twins)
+POST {{baseUrl}}/api/webhooks/whatsapp
+Content-Type: application/json
+
+< ./whatsapp-alfanar.json
+
+### 4. WHATSAPP — Marhaba restaurant with tip (should NEEDS_REVIEW near auto)
+POST {{baseUrl}}/api/webhooks/whatsapp
+Content-Type: application/json
+
+< ./whatsapp-marhaba.json
+
+### 5. WHATSAPP — Petromin receipt for Najm driver (should AUTO_MATCH → tx #8)
+POST {{baseUrl}}/api/webhooks/whatsapp
+Content-Type: application/json
+
+< ./whatsapp-petromin.json
+
+### 6. WHATSAPP — blurry / garbage photo (should FAIL)
+POST {{baseUrl}}/api/webhooks/whatsapp
+Content-Type: application/json
+
+< ./whatsapp-garbage.json
+
+### 7. IDEMPOTENCY — refire #1 to prove dedupe (returns outcome=DUPLICATE)
+POST {{baseUrl}}/api/webhooks/email
+Content-Type: application/json
+
+< ./email-alrajhi.json
+
+### 8. VALIDATION — malformed payload returns 400
+POST {{baseUrl}}/api/webhooks/email
+Content-Type: application/json
+
+{ "not_a": "valid payload" }

@@ -1,0 +1,25 @@
+{
+  "entry": [
+    {
+      "changes": [
+        {
+          "value": {
+            "messages": [
+              {
+                "id": "wamid.petromin_najm_1",
+                "from": "966502222222",
+                "timestamp": "1749888180",
+                "type": "image",
+                "image": {
+                  "id": "media_petromin_najm",
+                  "mime_type": "image/jpeg",
+                  "sha256": "fixture"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
