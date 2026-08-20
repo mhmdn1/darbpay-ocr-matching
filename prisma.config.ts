@@ -7,8 +7,11 @@ export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
+    seed: "node --import tsx prisma/seed.ts",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    // A fresh clone works without private configuration. DATABASE_URL remains
+    // overridable for CI or a developer who wants a separate SQLite file.
+    url: process.env["DATABASE_URL"] ?? "file:./dev.db",
   },
 });

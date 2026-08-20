@@ -34,7 +34,7 @@ Zod schema validation ─┐   ┌──── tenant-safe exact + semantic dedu
                                    /review (server component)
                                           │
                                           ▼
-                             confirmMatch / rejectMatch (server actions)
+                    confirmMatch / rejectMatch / explainMatch (server actions)
 ```
 
 Two hard interfaces make the pipeline swappable end-to-end without touching
@@ -178,8 +178,9 @@ See [`prisma/schema.prisma`](prisma/schema.prisma). Notable choices:
 - **Extra `Document` fields** beyond the spec: `errorMessage` (for the
   FAILED branch), `extractionConfidence` (for reviewer context),
   `updatedAt`, strong identifiers, semantic fingerprint, and per-field OCR
-  confidence. `DocumentMatch` persists rank, evidence coverage, and
-  contradictions for auditability.
+  confidence. `DocumentMatch` persists rank, evidence coverage, contradictions,
+  and an optional cached on-demand explanation with its evidence hash, provider,
+  model, prompt version, and generation timestamp for auditability.
 
 ## Pipeline / ingestion
 
@@ -232,6 +233,15 @@ persistence.
   CANDIDATE matches on the same document (they lost).
 - **Document status transitions**: confirm → MATCHED; reject with no
   remaining candidates → UNMATCHED.
+- **On-demand candidate explanations**: no explanation is generated during
+  ingestion, scoring, or page rendering. The reviewer must click **Explain
+  match**. The server re-reads the trusted match row, sends only sanitized
+  matcher evidence to the configured provider, and stores the result. A SHA-256
+  hash of the evidence plus prompt version makes repeat requests free and
+  invalidates the cache if the scoring evidence changes. With no API key (or a
+  provider failure), the same action uses a deterministic local explainer so
+  the assessment remains fully runnable offline. The explanation never changes
+  a score or decision; it is presentation only.
 
 ## Assumptions
 
@@ -289,8 +299,9 @@ persistence.
   enrich missing OCR fields without overwriting visible extracted values.
 - **`/review` UI**. Server component listing NEEDS_REVIEW documents with
   ranked candidates, per-signal confidence breakdown, and confirm/reject
-  buttons wired to the safe-action server actions. Verified end-to-end
-  during development.
+  buttons wired to the safe-action server actions. Every candidate also has an
+  explicit, click-only explanation control; stored explanations render under
+  their candidate. Verified end-to-end during development.
 
 ## Design sketch: multi-transaction invoice
 

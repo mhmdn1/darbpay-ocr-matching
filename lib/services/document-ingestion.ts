@@ -39,6 +39,8 @@ export interface IngestionDependencies {
   prisma?: PrismaClient;
   extractor: DocumentExtractor;
   extractionTimeoutMs?: number;
+  /** Override stable audit sampling for deterministic tests and demo seeds. */
+  autoMatchAuditRate?: number;
 }
 
 /**
@@ -239,7 +241,7 @@ export async function ingestDocument(
     candidates,
   );
 
-  return await persistMatchResult(db, doc.id, result);
+  return await persistMatchResult(db, doc.id, result, deps.autoMatchAuditRate);
   } catch (err) {
     // The unique constraints are the source of truth for idempotency. This
     // handles concurrent redeliveries that both pass the optimistic pre-check.
@@ -352,6 +354,7 @@ async function persistMatchResult(
   db: PrismaClient,
   documentId: number,
   result: MatchResult,
+  autoMatchAuditRate = 0.02,
 ): Promise<IngestionResult> {
   if (result.outcome === 'UNMATCHED') {
     await db.document.update({ where: { id: documentId }, data: { status: 'UNMATCHED' } });
@@ -359,7 +362,7 @@ async function persistMatchResult(
   }
 
   const isAuto = result.outcome === 'AUTO_MATCHED';
-  const isAuditSample = isAuto && shouldAuditAutoMatch(String(documentId));
+  const isAuditSample = isAuto && shouldAuditAutoMatch(String(documentId), autoMatchAuditRate);
   const persistAsAuto = isAuto && !isAuditSample;
   const topCandidate = result.candidates[0];
   log.info('matcher decision', {

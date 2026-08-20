@@ -95,20 +95,26 @@ model Document {
 }
 
 model DocumentMatch {
-  id            Int         @id @default(autoincrement())
-  documentId    Int
-  transactionId Int
-  confidence    Float
-  signals       String      // JSON-serialized Record<string, number>
-  evidenceCoverage Float    @default(0)
-  contradictions String     @default("[]")
-  rank          Int?
-  status        MatchStatus @default(CANDIDATE)
-  decidedBy     String?
-  decidedAt     DateTime?
-  createdAt     DateTime    @default(now())
-  document      Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  transaction   Transaction @relation(fields: [transactionId], references: [id])
+  id                       Int         @id @default(autoincrement())
+  documentId               Int
+  transactionId            Int
+  confidence               Float
+  signals                  String      // JSON-serialized Record<string, number>
+  evidenceCoverage         Float       @default(0)
+  contradictions           String      @default("[]")
+  rank                     Int?
+  status                   MatchStatus @default(CANDIDATE)
+  decidedBy                String?
+  decidedAt                DateTime?
+  explanation              String?
+  explanationInputHash     String?
+  explanationProvider      String?
+  explanationModel         String?
+  explanationPromptVersion String?
+  explanationGeneratedAt   DateTime?
+  createdAt                DateTime    @default(now())
+  document                 Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  transaction              Transaction @relation(fields: [transactionId], references: [id])
 
   @@unique([documentId, transactionId])
   @@index([transactionId, status])

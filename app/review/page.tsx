@@ -6,6 +6,7 @@ import { format } from 'date-fns';
 import { AlertCircle, ArrowUpRight, CheckCircle2, Clock3, FileSearch, Inbox, Mail, MessageCircle, ReceiptText, ShieldCheck } from 'lucide-react';
 import { DecisionButtons } from './decision-buttons';
 import { MATCHER_CONFIG } from '@/lib/services/transaction-matcher';
+import { CandidateExplanation } from './candidate-explanation';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,8 @@ interface CandidateRow {
   evidenceCoverage: number;
   contradictions: string[];
   rank: number | null;
+  explanation: string | null;
+  explanationProvider: string | null;
 }
 
 interface DocRow {
@@ -58,7 +61,7 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
         // this list leaves stale Match/Reject buttons after revalidation.
         where: { status: 'CANDIDATE' },
         include: { transaction: true },
-        orderBy: { confidence: 'desc' },
+        orderBy: [{ confidence: 'desc' }, { rank: 'asc' }],
       },
     },
   });
@@ -94,6 +97,8 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
       evidenceCoverage: m.evidenceCoverage,
       contradictions: safeParseArray(m.contradictions),
       rank: m.rank,
+      explanation: m.explanation,
+      explanationProvider: m.explanationProvider,
       })),
   }));
   return status === 'NEEDS_REVIEW'
@@ -241,6 +246,7 @@ export default async function ReviewPage() {
 
 function DocumentCard({ doc }: { doc: DocRow }) {
   const topConfidence = doc.candidates[0]?.confidence ?? 0;
+  const hasTopTie = doc.candidates.length > 1 && doc.candidates[1].confidence === topConfidence;
   return (
     <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-200/50">
       <header className="flex flex-col justify-between gap-5 border-b border-slate-100 p-5 sm:flex-row sm:items-start lg:p-6">
@@ -280,14 +286,21 @@ function DocumentCard({ doc }: { doc: DocRow }) {
       <div className="space-y-3 p-4 sm:p-5 lg:p-6">
         <div className="flex items-center justify-between px-1">
           <p className="text-sm font-semibold">Candidate transactions</p>
-          <p className="text-xs text-slate-400">{doc.candidates.length} candidates ranked</p>
+          <p className="text-xs text-slate-400">
+            {doc.candidates.length} {doc.candidates.length === 1 ? 'candidate' : 'candidates'} ranked
+          </p>
         </div>
-        {doc.candidates.map((c, index) => (
-          <div key={c.matchId} className={`rounded-xl border p-4 transition-colors ${index === 0 ? 'border-[#b9c9ff] bg-[#f7f9ff]' : 'border-slate-200 hover:border-slate-300'}`}>
+        {doc.candidates.map((c, index) => {
+          const tiedForTop = hasTopTie && c.confidence === topConfidence;
+          const uniquelyRecommended = index === 0 && !hasTopTie;
+          const highlighted = tiedForTop || uniquelyRecommended;
+          return (
+          <div key={c.matchId} className={`rounded-xl border p-4 transition-colors ${highlighted ? 'border-[#b9c9ff] bg-[#f7f9ff]' : 'border-slate-200 hover:border-slate-300'}`}>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  {index === 0 && <Badge className="bg-[#3157d5] text-white hover:bg-[#3157d5]">Recommended</Badge>}
+                  {tiedForTop && <Badge className="bg-violet-600 text-white hover:bg-violet-600">Tied for best</Badge>}
+                  {uniquelyRecommended && <Badge className="bg-[#3157d5] text-white hover:bg-[#3157d5]">Recommended</Badge>}
                   <span className="font-semibold">{c.merchantName}</span>
                   <span className="text-xs text-slate-400">Transaction #{c.transactionId}</span>
                 </div>
@@ -311,6 +324,11 @@ function DocumentCard({ doc }: { doc: DocRow }) {
                     </span>
                   ))}
                 </div>
+                <CandidateExplanation
+                  matchId={c.matchId}
+                  initialExplanation={c.explanation}
+                  initialProvider={c.explanationProvider}
+                />
               </div>
               <div className="flex items-center justify-between gap-5 border-t border-slate-200/70 pt-4 lg:w-[270px] lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
                 <div className="min-w-[72px]">
@@ -323,7 +341,8 @@ function DocumentCard({ doc }: { doc: DocRow }) {
               </div>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </article>
   );

@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { actionClient } from '@/lib/actions/safe-action-client';
 import { confirmMatchTx, rejectMatchTx } from '@/lib/services/review-service';
+import { explainMatchOnDemand } from '@/lib/services/match-explanation';
 
 const matchIdSchema = z.object({ matchId: z.number().int().positive() });
 
@@ -31,6 +32,15 @@ export const rejectMatch = actionClient
   .inputSchema(matchIdSchema)
   .action(async ({ parsedInput }) => {
     const result = await rejectMatchTx(parsedInput.matchId, 'reviewer');
+    revalidatePath('/review');
+    return result;
+  });
+
+/** Generate a short explanation only after the reviewer explicitly requests it. */
+export const explainMatch = actionClient
+  .inputSchema(matchIdSchema)
+  .action(async ({ parsedInput }) => {
+    const result = await explainMatchOnDemand(parsedInput.matchId);
     revalidatePath('/review');
     return result;
   });

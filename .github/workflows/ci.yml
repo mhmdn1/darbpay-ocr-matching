@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: file:./ci.db
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Use project Node.js version
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Apply migrations and seed the demo
+        run: npm run demo:setup
+
+      - name: Test, lint, type-check, and build
+        run: npm run verify

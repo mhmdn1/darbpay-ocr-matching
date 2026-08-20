@@ -113,6 +113,76 @@ export const FIXTURE_EXTRACTIONS: FixtureSpec[] = [
       extractionConfidence: 0.92,
     },
   },
+  {
+    // Demo: a second scan targets a transaction that already owns a confirmed
+    // document. It must stay in review even though the receipt itself is exact.
+    file: 'alrajhi-duplicate-receipt.txt',
+    extracted: {
+      documentType: 'TAX_INVOICE',
+      merchantName: 'Alrajhi Auto Service',
+      vatNumber: '300123456700003',
+      totalAmount: 120000,
+      currency: 'SAR',
+      documentDate: '2025-06-20T10:04:00Z',
+      cardLast4: '4411',
+      invoiceNumber: 'AR-COPY-99812',
+      rawText: 'ALRAJHI AUTO SERVICE — DUPLICATE COPY — TOTAL SAR 1200.00 — card 4411',
+      extractionConfidence: 0.96,
+    },
+  },
+  {
+    // Demo: no purchase date and no card digits. Ingestion uses receivedAt as
+    // weak date evidence, which is deliberately forbidden from auto-matching.
+    file: 'stc-missing-date.txt',
+    extracted: {
+      documentType: 'RECEIPT',
+      merchantName: 'STC Payment',
+      vatNumber: null,
+      totalAmount: 50000,
+      currency: 'SAR',
+      documentDate: null,
+      cardLast4: null,
+      invoiceNumber: 'STC-MISSING-DATE-1',
+      fieldConfidences: { merchantName: 0.96, totalAmount: 0.98 },
+      rawText: 'STC PAYMENT — TOTAL SAR 500.00 — purchase date and card not legible',
+      extractionConfidence: 0.76,
+    },
+  },
+  {
+    // Demo: the same chain, amount, day, and card appear at two branches. City
+    // and branch context rank Riyadh first, but the small gap still needs review.
+    file: 'nour-cafe-branch-choice.txt',
+    extracted: {
+      documentType: 'RECEIPT',
+      merchantName: 'NOUR CAFE BR 04 RUH',
+      vatNumber: null,
+      totalAmount: 8750,
+      currency: 'SAR',
+      documentDate: '2025-06-22T08:20:00Z',
+      cardLast4: '4411',
+      invoiceNumber: 'NC-220625-04',
+      rawText: 'NOUR CAFE BR 04 RUH — TOTAL SAR 87.50 — card 4411',
+      extractionConfidence: 0.93,
+    },
+  },
+  {
+    // Demo: every identity signal looks plausible except a confidently read
+    // USD currency against a SAR transaction. The contradiction leaves it unmatched.
+    file: 'panda-currency-conflict.txt',
+    extracted: {
+      documentType: 'RECEIPT',
+      merchantName: 'Panda Supermarket',
+      vatNumber: null,
+      totalAmount: 42000,
+      currency: 'USD',
+      documentDate: '2025-06-18T18:14:00Z',
+      cardLast4: '4411',
+      invoiceNumber: 'PANDA-USD-42',
+      fieldConfidences: { currency: 0.99, totalAmount: 0.98 },
+      rawText: 'PANDA SUPERMARKET — TOTAL USD 420.00 — card 4411',
+      extractionConfidence: 0.95,
+    },
+  },
 ];
 
 export function hashBuffer(buf: Buffer): string {
