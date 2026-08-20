@@ -18,6 +18,9 @@ interface CandidateRow {
   currency: string;
   transactionAt: Date;
   cardLast4: string;
+  merchantVatNumber: string | null;
+  invoiceNumber: string | null;
+  authorizationCode: string | null;
   confidence: number;
   signals: Record<string, number>;
   evidenceCoverage: number;
@@ -38,7 +41,9 @@ interface DocRow {
   currency: string | null;
   documentDate: Date | null;
   cardLast4: string | null;
+  vatNumber: string | null;
   invoiceNumber: string | null;
+  authorizationCode: string | null;
   extractionConfidence: number | null;
   receivedAt: Date;
   errorMessage: string | null;
@@ -77,7 +82,9 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
     currency: d.currency,
     documentDate: d.documentDate,
     cardLast4: d.cardLast4,
+    vatNumber: d.vatNumber,
     invoiceNumber: d.invoiceNumber,
+    authorizationCode: d.authorizationCode,
     extractionConfidence: d.extractionConfidence,
     receivedAt: d.receivedAt,
     errorMessage: d.errorMessage,
@@ -92,6 +99,9 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
       currency: m.transaction.currency,
       transactionAt: m.transaction.transactionAt,
       cardLast4: m.transaction.cardLast4,
+      merchantVatNumber: m.transaction.merchantVatNumber,
+      invoiceNumber: m.transaction.invoiceNumber,
+      authorizationCode: m.transaction.authorizationCode,
       confidence: m.confidence,
       signals: safeParseSignals(m.signals),
       evidenceCoverage: m.evidenceCoverage,
@@ -255,6 +265,9 @@ function DocumentCard({ doc }: { doc: DocRow }) {
             <ReceiptText className="size-5" />
           </div>
           <div className="min-w-0">
+            <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#3157d5]">
+              Receipt / invoice being reviewed
+            </p>
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="truncate text-lg font-semibold">{doc.merchantName ?? 'Unknown merchant'}</h3>
               <Badge className={doc.reviewReason === 'AUTO_MATCH_AUDIT'
@@ -285,7 +298,15 @@ function DocumentCard({ doc }: { doc: DocRow }) {
 
       <div className="space-y-3 p-4 sm:p-5 lg:p-6">
         <div className="flex items-center justify-between px-1">
-          <p className="text-sm font-semibold">Candidate transactions</p>
+          <div>
+            <p className="text-sm font-semibold">Candidate transaction comparisons</p>
+            <p className="mt-0.5 text-xs text-slate-400">Each transaction is compared directly with the extracted receipt above.</p>
+            <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-500" aria-label="Comparison signal legend">
+              <span className="inline-flex items-center gap-1.5"><span className="size-2 rounded-full bg-emerald-500" />Strong agreement</span>
+              <span className="inline-flex items-center gap-1.5"><span className="size-2 rounded-full bg-amber-500" />Partial agreement</span>
+              <span className="inline-flex items-center gap-1.5"><span className="size-2 rounded-full bg-rose-500" />Conflict</span>
+            </div>
+          </div>
           <p className="text-xs text-slate-400">
             {doc.candidates.length} {doc.candidates.length === 1 ? 'candidate' : 'candidates'} ranked
           </p>
@@ -302,13 +323,11 @@ function DocumentCard({ doc }: { doc: DocRow }) {
                   {tiedForTop && <Badge className="bg-violet-600 text-white hover:bg-violet-600">Tied for best</Badge>}
                   {uniquelyRecommended && <Badge className="bg-[#3157d5] text-white hover:bg-[#3157d5]">Recommended</Badge>}
                   <span className="font-semibold">{c.merchantName}</span>
-                  <span className="text-xs text-slate-400">Transaction #{c.transactionId}</span>
+                  <Badge variant="outline" className="bg-white text-xs font-medium text-slate-500">
+                    Comparing with transaction #{c.transactionId}
+                  </Badge>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-500">
-                  <span className="font-medium text-slate-800">{formatMoney(c.amount, c.currency)}</span>
-                  <span>{format(c.transactionAt, 'MMM d, yyyy · HH:mm')}</span>
-                  <span>Card •••• {c.cardLast4}</span>
-                </div>
+                <CandidateComparison doc={doc} candidate={c} />
                 <div className="mt-3 flex flex-wrap gap-2">
                   {Object.entries(c.signals).map(([name, score]) => (
                     <span key={name} className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200">
@@ -346,6 +365,104 @@ function DocumentCard({ doc }: { doc: DocRow }) {
       </div>
     </article>
   );
+}
+
+interface ComparisonField {
+  label: string;
+  receiptValue: string;
+  transactionValue: string;
+  signal?: number;
+}
+
+function CandidateComparison({ doc, candidate }: { doc: DocRow; candidate: CandidateRow }) {
+  const fields: ComparisonField[] = [
+    {
+      label: 'Merchant',
+      receiptValue: doc.merchantName ?? 'Not extracted',
+      transactionValue: candidate.merchantName,
+      signal: candidate.signals.merchant,
+    },
+    {
+      label: 'Amount',
+      receiptValue: formatMoney(doc.totalAmount, doc.currency),
+      transactionValue: formatMoney(candidate.amount, candidate.currency),
+      signal: candidate.signals.amount,
+    },
+    {
+      label: 'Date',
+      receiptValue: doc.documentDate ? format(doc.documentDate, 'MMM d, yyyy') : 'Not extracted',
+      transactionValue: format(candidate.transactionAt, 'MMM d, yyyy · HH:mm'),
+      signal: candidate.signals.date ?? candidate.signals.dateFallback,
+    },
+    {
+      label: 'Card',
+      receiptValue: doc.cardLast4 ? `•••• ${doc.cardLast4}` : 'Not extracted',
+      transactionValue: `•••• ${candidate.cardLast4}`,
+      signal: candidate.signals.cardLast4,
+    },
+  ];
+
+  appendOptionalComparison(fields, 'Invoice', doc.invoiceNumber, candidate.invoiceNumber, candidate.signals.invoiceNumber);
+  appendOptionalComparison(fields, 'VAT number', doc.vatNumber, candidate.merchantVatNumber, candidate.signals.vatNumber);
+  appendOptionalComparison(
+    fields,
+    'Authorization',
+    doc.authorizationCode,
+    candidate.authorizationCode,
+    candidate.signals.authorizationCode,
+  );
+
+  return (
+    <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+      <div className="min-w-[620px]">
+        <div className="grid grid-cols-[140px_minmax(0,1fr)_minmax(0,1fr)] border-b border-slate-200 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <div className="px-3 py-2">Compared field</div>
+          <div className="border-l border-slate-200 px-3 py-2 text-[#3157d5]">Extracted receipt / invoice</div>
+          <div className="border-l border-slate-200 px-3 py-2 text-slate-700">Transaction #{candidate.transactionId}</div>
+        </div>
+        {fields.map((field) => (
+          <div
+            key={field.label}
+            className="grid grid-cols-[140px_minmax(0,1fr)_minmax(0,1fr)] border-b border-slate-100 text-xs last:border-b-0"
+          >
+            <div className="flex items-center justify-between gap-2 px-3 py-2.5 font-medium text-slate-500">
+              <span>{field.label}</span>
+              <SignalIndicator score={field.signal} />
+            </div>
+            <div className="border-l border-slate-100 px-3 py-2.5 font-medium text-slate-800">{field.receiptValue}</div>
+            <div className="border-l border-slate-100 px-3 py-2.5 font-medium text-slate-800">{field.transactionValue}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function appendOptionalComparison(
+  fields: ComparisonField[],
+  label: string,
+  receiptValue: string | null,
+  transactionValue: string | null,
+  signal?: number,
+) {
+  if (!receiptValue && !transactionValue) return;
+  fields.push({
+    label,
+    receiptValue: receiptValue ?? 'Not extracted',
+    transactionValue: transactionValue ?? 'Not available',
+    signal,
+  });
+}
+
+function SignalIndicator({ score }: { score?: number }) {
+  if (score == null) return null;
+  if (score >= 0.9) {
+    return <span title="Strong agreement" aria-label="Strong agreement" className="size-2 shrink-0 rounded-full bg-emerald-500" />;
+  }
+  if (score <= 0.05) {
+    return <span title="Conflicting values" aria-label="Conflicting values" className="size-2 shrink-0 rounded-full bg-rose-500" />;
+  }
+  return <span title="Partial agreement" aria-label="Partial agreement" className="size-2 shrink-0 rounded-full bg-amber-500" />;
 }
 
 function signalLabel(signal: string): string {
