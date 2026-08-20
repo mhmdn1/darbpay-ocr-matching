@@ -44,14 +44,22 @@ verification executed by GitHub Actions.
 
 ## Setup
 
-The quick start above is the recommended reviewer path. For manual control:
+The quick start above is the recommended reviewer path. It seeds a curated UI
+demo and starts the development server. For manual control, run the same stages
+separately:
 
 ```bash
 npm install
 npm run db:generate     # optional after install; postinstall already runs it
 npm run db:migrate      # create the SQLite file + apply versioned migrations
 npm run demo:seed       # reset dev data and load the review-page demo
+npm run dev             # start Next.js at http://localhost:3000
 ```
+
+`npm run demo:seed` is repeatable and intentionally destructive to the
+configured development database: it clears existing demo rows, inserts clients
+and card transactions, and ingests the fixture documents again. Never point
+`DATABASE_URL` at production when running a seed command.
 
 The application defaults to `file:./dev.db`. Copy `.env.example` to `.env`
 only when you want to override the database path, enable signed webhooks, or
@@ -75,7 +83,7 @@ npm run dev
 
 The review page lists NEEDS_REVIEW documents with ranked candidates and
 confirm/reject buttons. Other statuses (MATCHED / UNMATCHED / FAILED) are
-in the "Other documents" table below.
+in the "Processing history" table below.
 
 Each candidate also has a small **Explain match** button. Explanations are
 strictly on demand: page loads, ingestion, and matching never call an LLM.
@@ -108,21 +116,43 @@ using its separate throwaway `test.db`.
 
 Six ready-made payloads live in [`fixtures/webhook-payloads/`](fixtures/webhook-payloads/).
 
-**With curl** (dev server must be running):
+### Reproducible curl walkthrough
+
+The webhook examples reuse some of the same receipt files as the populated UI
+demo. Start this walkthrough with the webhook-specific seed so each request is
+a first delivery instead of being deduplicated against an existing demo
+document.
+
+In terminal 1:
 
 ```bash
-./fixtures/webhook-payloads/fire-all.sh
+npm run webhooks:setup  # reset dev data; seed clients + transactions, no documents
+npm run dev             # keep this process running
 ```
+
+In terminal 2:
+
+```bash
+npm run webhooks:fire
+```
+
+The script requires `curl`; if `jq` is installed it pretty-prints the JSON,
+otherwise it prints the raw response. Refresh
+[http://localhost:3000/review](http://localhost:3000/review) after it completes.
+Running `npm run demo:seed` later restores the larger curated review-page demo.
 
 Individual request:
 
 ```bash
 curl -X POST http://localhost:3000/api/webhooks/email \
   -H 'Content-Type: application/json' \
-  --data-binary @fixtures/webhook-payloads/email-alrajhi.json | jq .
+  --data-binary @fixtures/webhook-payloads/email-alrajhi.json
 ```
 
-**With an .http-client** (VS Code REST Client, JetBrains): open
+### `.http` alternative
+
+With VS Code REST Client or a JetBrains HTTP client, first run
+`npm run webhooks:setup && npm run dev`, then open
 [`fixtures/webhook-payloads/requests.http`](fixtures/webhook-payloads/requests.http)
 and click through each request.
 
@@ -133,20 +163,30 @@ Expected outcomes:
 | `email-alrajhi.json` | `/api/webhooks/email` | AUTO_MATCHED |
 | `email-zamil-orphan.json` | `/api/webhooks/email` | UNMATCHED |
 | `whatsapp-alfanar.json` | `/api/webhooks/whatsapp` | NEEDS_REVIEW (twin transactions) |
-| `whatsapp-marhaba.json` | `/api/webhooks/whatsapp` | NEEDS_REVIEW (tip case, borderline) |
+| `whatsapp-marhaba.json` | `/api/webhooks/whatsapp` | AUTO_MATCHED (tip-tolerant amount scoring) |
 | `whatsapp-petromin.json` | `/api/webhooks/whatsapp` | AUTO_MATCHED |
 | `whatsapp-garbage.json` | `/api/webhooks/whatsapp` | FAILED |
 | refire any of the above | (any) | DUPLICATE (idempotent) |
 
 ## Tests
 
+Run the complete Jest suite:
+
 ```bash
 npm test
+```
+
+Run the submission gate used by CI—tests, lint, strict TypeScript, and a
+production build:
+
+```bash
+npm run verify
 ```
 
 Eleven test files cover the required behavior, matching hardening, and database invariants:
 
 - `matcher.test.ts` — the six edge cases in the spec + cardLast4 mismatch, currency mismatch, partial extraction, one-confirmed rule, trimming.
+- `matcher-edge-matrix.test.ts` — 51 focused boundary, missing-field, contradiction, and ranking cases.
 - `normalization.test.ts` — real-world messy merchant strings + all four signal scorers + phone normalization.
 - `signature.test.ts` — HMAC verification.
 - `ingestion.test.ts` — happy path, redelivery, extractor throw, garbage extraction, sender scoping (both directions), leak isolation between clients.
@@ -235,5 +275,8 @@ npm run db:seed      # tsx prisma/seed.ts
 npm run demo:seed    # reset and populate the visible review-page demo
 npm run demo:setup   # generate client + migrate + seed
 npm run demo         # complete demo setup, then start the app
+npm run webhooks:seed  # reset and seed clients/transactions only
+npm run webhooks:setup # generate + migrate + webhook prerequisite seed
+npm run webhooks:fire  # fire every curl sample at localhost:3000
 npm run db:studio    # prisma studio
 ```

@@ -4,6 +4,8 @@
  * Two clients with driver/email mappings, 17 card transactions, and a curated
  * review-page demo. Every document is sent through the real ingestion pipeline
  * using fixture-backed extraction; no DocumentMatch rows are hand-authored.
+ * Pass --transactions-only to load client/transaction reference data without
+ * documents. That mode is used before exercising the sample webhooks.
  *
  *   client 1 (Al Rashed Logistics)
  *     driver +966501111111 | inbound email fleet@alrashed.example
@@ -35,6 +37,8 @@ const adapter = new PrismaBetterSqlite3({
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
+  const transactionsOnly = process.argv.includes('--transactions-only');
+
   // Wipe in FK-safe order (dev-only seed).
   await prisma.documentMatch.deleteMany();
   await prisma.document.deleteMany();
@@ -213,6 +217,13 @@ async function main() {
       ...demoTx.map((tx) => ({ ...tx, clientId: alRashed.id, currency: 'SAR' })),
     ],
   });
+
+  if (transactionsOnly) {
+    const clients = await prisma.client.count();
+    const transactions = await prisma.transaction.count();
+    console.log(`seeded webhook prerequisites: ${clients} clients, ${transactions} transactions, 0 documents`);
+    return;
+  }
 
   const demoDocuments: Array<{
     file: string;

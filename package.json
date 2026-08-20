@@ -27,6 +27,9 @@
     "demo:seed": "node --import tsx prisma/seed.ts",
     "demo:setup": "npm run db:generate && npm run db:migrate && npm run demo:seed",
     "demo": "npm run demo:setup && npm run dev",
+    "webhooks:seed": "node --import tsx prisma/seed.ts --transactions-only",
+    "webhooks:setup": "npm run db:generate && npm run db:migrate && npm run webhooks:seed",
+    "webhooks:fire": "./fixtures/webhook-payloads/fire-all.sh",
     "db:studio": "prisma studio"
   },
   "dependencies": {

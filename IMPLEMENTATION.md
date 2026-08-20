@@ -2,15 +2,16 @@
 
 ## Table of contents
 1. [Architecture at a glance](#architecture-at-a-glance)
-2. [Matching engine](#matching-engine)
-3. [Data model](#data-model)
-4. [Pipeline / ingestion](#pipeline--ingestion)
-5. [Review actions](#review-actions)
-6. [Assumptions](#assumptions)
-7. [Trade-offs](#trade-offs)
-8. [Bonus features implemented](#bonus-features-implemented)
-9. [Design sketch: multi-transaction invoice](#design-sketch-multi-transaction-invoice)
-10. [What requires production data or infrastructure](#what-requires-production-data-or-infrastructure)
+2. [Key decisions](#key-decisions)
+3. [Matching engine](#matching-engine)
+4. [Data model](#data-model)
+5. [Pipeline / ingestion](#pipeline--ingestion)
+6. [Review actions](#review-actions)
+7. [Assumptions](#assumptions)
+8. [Trade-offs](#trade-offs)
+9. [Bonus features implemented](#bonus-features-implemented)
+10. [Design sketch: multi-transaction invoice](#design-sketch-multi-transaction-invoice)
+11. [What I would improve with more time](#what-i-would-improve-with-more-time)
 
 ## Architecture at a glance
 
@@ -47,6 +48,20 @@ the matcher or the persistence layer:
 - **`MediaStore`** (`lib/media/types.ts`) — the fixture-backed implementation
   loads files from `fixtures/documents/`; a production version would call
   `graph.facebook.com/{version}/{media-id}` with a bearer token.
+
+## Key decisions
+
+| Decision | Choice | Reason |
+|---|---|---|
+| Matching boundary | Pure matcher; candidate scoping stays in ingestion | Keeps authorization/tenant rules out of scoring and makes edge cases cheap to unit-test. |
+| Confidence | Explainable weighted heuristic, not a claimed probability | The repository has no production labels for trustworthy probabilistic calibration. Every component score can be shown to the reviewer. |
+| Missing evidence | Re-normalize available signals, then gate automation by evidence coverage | Missing card digits should not destroy ranking, but a sparse “100%” must never auto-confirm. |
+| Ambiguity | Require both an absolute threshold and a lead over the runner-up | Two equally good transactions should be reviewed even if both individually score 100%. |
+| Idempotency | Provider ID + tenant-scoped byte hash + semantic identity, enforced by unique constraints | Handles redelivery, re-encoding, and concurrent requests without cross-tenant suppression. |
+| Storage | SQLite with versioned Prisma migrations | Makes a fresh clone runnable without infrastructure while retaining relational constraints and transactional review actions. |
+| OCR integration | `DocumentExtractor` interface with deterministic fixtures | Demonstrates the production seam while keeping tests, CI, and reviewer setup offline and reproducible. |
+| Explanations | Generated only after an explicit click, cached by evidence hash | Avoids latency and LLM cost on page load and prevents generated prose from influencing the deterministic decision engine. |
+| Human review UI | Extracted receipt fields beside each exact candidate transaction | Lets finance operators verify what is being compared instead of trusting a score without context. |
 
 ## Matching engine
 
@@ -148,9 +163,9 @@ can decide whether this is a duplicate receipt.
 
 `confidence` is explicitly a **heuristic ranking score**, not a probability.
 `0.82` is the current fixture-informed auto-match line:
-the exact-match Alrajhi case lands at approximately **0.90** (auto), the Marhaba tip case
-lands at **0.813** (review — correct — tips are heuristic and defensible),
-the Petromin exact case lands at **≥0.95** (auto). Every threshold in
+the exact-match Alrajhi case and the Marhaba tip-tolerant case both clear the
+automation safeguards, while tied Alfanar transactions remain in review despite
+perfect individual scores. The Petromin exact case lands at **≥0.95** (auto). Every threshold in
 `MATCHER_CONFIG` is a single-line change and every scoring function is
 individually unit-tested (`__tests__/normalization.test.ts`) so tuning them
 is cheap. `npm run matcher:evaluate` provides the safe path to replace these
@@ -273,6 +288,18 @@ persistence.
 - **Extractor is async** but the fixture map lives entirely in memory.
   Matches the shape a real HTTP extractor would need without adding real
   latency.
+- **Synchronous pipeline over a queue** — completing extraction and matching
+  inside the webhook makes the take-home easy to run and inspect. The cost is
+  request latency and weaker retry semantics; production would acknowledge,
+  enqueue, and process asynchronously.
+- **On-demand prose over automatic LLM calls** — deterministic signals remain
+  the source of truth. Generating only after a reviewer asks avoids unnecessary
+  cost and latency, while caching preserves auditability. The fallback local
+  explainer keeps offline behavior predictable.
+- **Persist only the top candidate set** — capping at five keeps review payloads
+  understandable and storage bounded. It trades away long-tail alternatives,
+  which can be recomputed from the original extracted fields if thresholds or
+  scoring change.
 
 ## Bonus features implemented
 
@@ -299,9 +326,11 @@ persistence.
   enrich missing OCR fields without overwriting visible extracted values.
 - **`/review` UI**. Server component listing NEEDS_REVIEW documents with
   ranked candidates, per-signal confidence breakdown, and confirm/reject
-  buttons wired to the safe-action server actions. Every candidate also has an
-  explicit, click-only explanation control; stored explanations render under
-  their candidate. Verified end-to-end during development.
+  buttons wired to the safe-action server actions. Each candidate shows a
+  field-by-field receipt-versus-transaction comparison with agreement/conflict
+  indicators. Every candidate also has an explicit, click-only explanation
+  control; stored explanations render under their candidate. Verified
+  end-to-end during development.
 
 ## Design sketch: multi-transaction invoice
 
@@ -329,18 +358,34 @@ Shape:
 
 The scoring engine itself doesn't change — it's already line-shaped.
 
-## What requires production data or infrastructure
+## What I would improve with more time
 
-1. **Fit and validate calibration**: the pipeline exists, but this repository
+1. **Fit and validate calibration with reviewer labels**: the evaluation
+   pipeline exists, but this repository
    has zero human-labelled production decisions. I would require at least 100
    labels for an initial report and substantially more before changing an
    auto-match threshold. Split by time/client to avoid leakage.
-2. **Streaming ingestion** for large email attachments (multi-page PDFs).
+2. **Replace fixture OCR with a production extractor** behind the existing
+   `DocumentExtractor` interface. I would evaluate extraction quality per field,
+   add provider retries/circuit breaking, and retain the mock for deterministic
+   tests.
+3. **Store and preview original documents securely**. The current review UI
+   compares extracted fields with transaction fields; a production reviewer
+   should also be able to open the original receipt/PDF from tenant-scoped blob
+   storage using a short-lived URL.
+4. **Move extraction and matching to a durable job queue**. Webhooks currently
+   complete the pipeline synchronously for assessment simplicity. Production
+   handlers should acknowledge quickly, enqueue work idempotently, retry
+   transient provider failures, and dead-letter exhausted jobs.
+5. **Streaming ingestion** for large email attachments and multi-page PDFs.
    Right now we buffer in memory; a real system would stream to blob
    storage and pass the URL to the extractor.
-3. **Observability**: OpenTelemetry span around each ingestion, tagged
-   with the outcome — makes it trivial to alert on a spike in
-   NEEDS_REVIEW or FAILED.
-4. **Real OCR extractor** behind the same interface — either a managed
-   document-AI service or a hosted vision model. Would keep the mock as the
-   default for tests and CI so the suite stays offline and deterministic.
+6. **Operational observability**: add OpenTelemetry spans and structured
+   metrics for ingestion latency, extraction failure rate, review rate,
+   auto-match precision, and queue depth. Alert on changes by client/source.
+7. **Move from SQLite to PostgreSQL for deployment** while preserving the
+   current constraints. This would improve concurrent writes and provide
+   native JSON fields, stronger operational tooling, and production backups.
+8. **End-to-end browser and webhook contract tests** in addition to the current
+   unit/integration suite: fire signed payloads through a running server, make a
+   review decision, and assert the visible lifecycle transition.

@@ -21,7 +21,7 @@ Content-Type: application/json
 
 < ./whatsapp-alfanar.json
 
-### 4. WHATSAPP — Marhaba restaurant with tip (should NEEDS_REVIEW near auto)
+### 4. WHATSAPP — Marhaba restaurant with tip (should AUTO_MATCH)
 POST {{baseUrl}}/api/webhooks/whatsapp
 Content-Type: application/json
 
