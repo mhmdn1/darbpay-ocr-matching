@@ -41,6 +41,11 @@ model Transaction {
   cardLast4     String
   driverPhone   String?
   merchantName  String
+  merchantVatNumber String?
+  invoiceNumber String?
+  authorizationCode String?
+  merchantCategory String?
+  merchantCity String?
   amount        Int
   currency      String          @default("SAR")
   transactionAt DateTime
@@ -57,8 +62,10 @@ model Transaction {
 model Document {
   id                   Int             @id @default(autoincrement())
   source               DocumentSource
-  externalId           String          @unique // provider messageId / wamid
-  contentHash          String          @unique // sha256 of the file bytes
+  externalId           String                  // provider messageId / wamid
+  contentHash          String                  // sha256 of the file bytes
+  semanticFingerprint String?                 // stable invoice/authorization identity
+  ownerKey             String          @default("") // canonical tenant/client scope
   senderIdentifier     String                  // email address or E.164 phone
   status               DocumentStatus  @default(RECEIVED)
   // Extraction results — nullable until extraction runs
@@ -70,15 +77,21 @@ model Document {
   documentDate         DateTime?
   cardLast4            String?
   invoiceNumber        String?
+  authorizationCode    String?
+  fieldConfidences     String?                 // JSON-serialized per-field OCR confidence
   rawText              String?
   extractionConfidence Float?
   errorMessage         String?
+  reviewReason         String?
   receivedAt           DateTime        @default(now())
   updatedAt            DateTime        @updatedAt
   matches              DocumentMatch[]
 
   @@index([status])
   @@index([senderIdentifier])
+  @@unique([source, externalId])
+  @@unique([ownerKey, contentHash])
+  @@unique([ownerKey, semanticFingerprint])
 }
 
 model DocumentMatch {
@@ -87,6 +100,9 @@ model DocumentMatch {
   transactionId Int
   confidence    Float
   signals       String      // JSON-serialized Record<string, number>
+  evidenceCoverage Float    @default(0)
+  contradictions String     @default("[]")
+  rank          Int?
   status        MatchStatus @default(CANDIDATE)
   decidedBy     String?
   decidedAt     DateTime?

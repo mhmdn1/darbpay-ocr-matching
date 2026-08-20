@@ -10,7 +10,7 @@
 7. [Trade-offs](#trade-offs)
 8. [Bonus features implemented](#bonus-features-implemented)
 9. [Design sketch: multi-transaction invoice](#design-sketch-multi-transaction-invoice)
-10. [What I would improve with more time](#what-i-would-improve-with-more-time)
+10. [What requires production data or infrastructure](#what-requires-production-data-or-infrastructure)
 
 ## Architecture at a glance
 
@@ -18,7 +18,7 @@
 webhook (email / whatsapp)         lib/services/document-ingestion.ts
         │                                     │
         ▼                                     ▼
-Zod schema validation ─┐   ┌──── dedupe by (externalId, contentHash)
+Zod schema validation ─┐   ┌──── tenant-safe exact + semantic dedupe
                        │   │
                        ▼   ▼
               lib/services/document-ingestion.ts
@@ -65,16 +65,18 @@ transactions) so the matcher can be unit-tested with hand-built inputs.
 
 When a signal is missing on the document side (e.g. no card printed), we
 **re-normalize** — the confidence is `sum(available_score × weight) / sum(available_weight)`.
-That way a receipt with only amount + merchant + date can still auto-match
-if all three are perfect.
+That way a receipt with amount + merchant + date can still rank strongly.
+Automation additionally requires at least 70% weighted evidence coverage,
+three available core signals, no reliable contradiction, and a 0.12 lead.
+This prevents a perfect score over two sparse fields from looking certain.
 
 ### Amount score
 
 Halalas are the base unit throughout the codebase; the matcher never touches
 floats for money.
 
-- `±100 halalas` (±1 SAR) → **1.0** (VAT rounding tolerance)
-- receipt **smaller** than charge (customer tipped on the POS), diff ≤ 30% of charge → `1 − 0.5·(ratio / 0.30)` (linear decay from 1.0 to 0.5)
+- `max(100 halalas, 0.2% of the transaction)` → **1.0** (hybrid absolute/relative rounding tolerance)
+- for tip-eligible receipts only (restaurant/cafe/hospitality), receipt **smaller** than charge by ≤30% → linear decay from 1.0 to 0.5
 - receipt **larger** than charge, diff ≤ 2% → **0.9** (rare post-rounding overshoot)
 - everything else → **0**
 
@@ -82,26 +84,30 @@ floats for money.
 
 Piecewise linear so the decay tracks the real world:
 
-- same 24h → **1.0**
-- 1–3 days → linear 1.0 → 0.7 (drivers often submit "yesterday's" receipts)
+- same calendar date in `Asia/Riyadh` → **1.0**
+- within 24h across a Riyadh date boundary → **0.98**
+- 1–3 days → linear 0.98 → 0.7 (drivers often submit "yesterday's" receipts)
 - 3–14 days → linear 0.7 → 0.2 (weekly reconciliation, holidays)
 - >14 days → **0**
 
 ### Merchant score
 
 `normalizeMerchant()`:
-1. Upper-case, NFKD-strip diacritics
-2. Replace non-alphanumeric with space
-3. Drop tokens that are pure numbers (branch codes like `04`)
-4. Drop a small stopword list: category noise (`ST`, `STATION`, `STORE`,
+1. Upper-case, NFKD-strip Latin and Arabic diacritics/tatweel
+2. Canonicalize Arabic alef/yaa/hamza forms and Arabic-Indic digits
+3. Preserve Arabic and Latin letters while replacing punctuation with spaces
+4. Drop pure numeric tokens from the chain-level name
+5. Drop a small bilingual stopword list: category noise (`ST`, `STATION`, `STORE`,
    `BR`, `BRANCH`), corporate suffixes (`LTD`, `LLC`, `INC`, `POS`), and
    KSA city codes seen on acquirer strings (`RUH`, `JED`, `DMM`, ...).
 
-Then the score is the mean of:
+Then the chain-level score is the mean of:
 - **Token Jaccard** (identifies chain overlap on short strings)
 - **Character-bigram Dice** (survives spelling / spacing drift)
 
-No dependency needed; both are ~15 lines of pure TS.
+An Arabic-to-Latin fallback helps with cross-script strings. City and branch
+are parsed separately and contribute small context scores, so the engine can
+distinguish two branches without corrupting the chain name.
 
 Example: `"ALFANAR FUEL ST 04 RUH"` and `"Alfanar Fuel Station"` both
 normalize to `"ALFANAR FUEL"` → **1.0**.
@@ -109,11 +115,18 @@ normalize to `"ALFANAR FUEL"` → **1.0**.
 ### cardLast4 score
 
 - match → **1.0**
-- mismatch → **0** *and* a `0.25` multiplier is applied to the total
-  confidence. This is a soft veto: card OCR is unreliable enough that we
-  don't want a single misread digit to remove an otherwise excellent match
-  from the review queue entirely, but we do want it out of the auto-match
-  band.
+- mismatch → **0**. When field-level OCR confidence is at least 0.80 it is
+  recorded as a hard contradiction: automation is vetoed and the ranking
+  score is reduced. Low-confidence OCR remains reviewable.
+
+### Strong identifiers and rarity
+
+Exact VAT number, invoice number, and authorization code comparisons are
+supported when the transaction feed contains them. ZATCA QR TLV payloads can
+fill missing VAT, seller, date, and total fields at 0.99 source reliability.
+Inside each tenant/date block, rare merchant and amount values receive a small,
+bounded ranking bonus; it is deliberately limited until reviewer labels prove
+how much discriminative value it has.
 
 ### Outcome thresholds
 
@@ -121,8 +134,9 @@ normalize to `"ALFANAR FUEL"` → **1.0**.
 |------------------|-------|---------|
 | `autoMatch`      | 0.82  | Top confidence needed for AUTO_MATCHED |
 | `autoMatchGap`   | 0.12  | Minimum gap over the runner-up for AUTO_MATCHED |
-| `tieGap`         | 0.05  | Below this the top two are treated as a tie → NEEDS_REVIEW |
 | `review`         | 0.55  | Below this: not even worth surfacing (UNMATCHED) |
+| `candidateDisplay` | 0.35 | Weak alternatives below this are omitted from review |
+| evidence coverage | 0.70 | Minimum available weighted evidence for AUTO_MATCHED |
 | `maxCandidates`  | 5     | Cap on the ranked list persisted for the review UI |
 
 The **one-confirmed-doc-per-transaction rule** is applied in the matcher too:
@@ -132,13 +146,15 @@ can decide whether this is a duplicate receipt.
 
 ### Why these numbers?
 
-`0.82` felt like the right auto-match line after running the six fixtures:
+`confidence` is explicitly a **heuristic ranking score**, not a probability.
+`0.82` is the current fixture-informed auto-match line:
 the exact-match Alrajhi case lands at approximately **0.90** (auto), the Marhaba tip case
 lands at **0.813** (review — correct — tips are heuristic and defensible),
 the Petromin exact case lands at **≥0.95** (auto). Every threshold in
 `MATCHER_CONFIG` is a single-line change and every scoring function is
 individually unit-tested (`__tests__/normalization.test.ts`) so tuning them
-is cheap.
+is cheap. `npm run matcher:evaluate` provides the safe path to replace these
+choices with held-out reviewer-label metrics and isotonic calibration.
 
 ## Data model
 
@@ -161,20 +177,26 @@ See [`prisma/schema.prisma`](prisma/schema.prisma). Notable choices:
   queue).
 - **Extra `Document` fields** beyond the spec: `errorMessage` (for the
   FAILED branch), `extractionConfidence` (for reviewer context),
-  `updatedAt`, `invoiceNumber`.
+  `updatedAt`, strong identifiers, semantic fingerprint, and per-field OCR
+  confidence. `DocumentMatch` persists rank, evidence coverage, and
+  contradictions for auditability.
 
 ## Pipeline / ingestion
 
 `lib/services/document-ingestion.ts` is the seam between webhooks and
 persistence.
 
-- **Idempotency**: dedupe by `externalId` **or** `contentHash`. The unique
+- **Idempotency**: provider IDs are unique per source; byte hashes and semantic
+  invoice identities are unique per canonical client owner. This handles
+  re-encoding/cropping without allowing one tenant to suppress another. The unique
   constraints are the source of truth; a pre-check handles the common path
   and explicit unique-error recovery handles concurrent redeliveries.
 - **Failure isolation**: once a Document exists, extraction, invalid extracted
   values, scoping, and match-persistence failures are translated to FAILED.
   Failure before the initial row exists is reported as a per-item webhook
   error because no terminal state can be persisted during a database outage.
+- **Extractor timeout**: provider calls have a configurable 15-second deadline;
+  a timeout follows the same persisted FAILED path as other extraction errors.
 - **Extraction low-confidence gating**: `documentType === 'UNKNOWN'`,
   `extractionConfidence < 0.3`, or `totalAmount == null` → skip matching
   and mark FAILED. The extracted text is still persisted so the reviewer
@@ -182,6 +204,10 @@ persistence.
 - **Sender scoping** (per the spec):
   - WhatsApp: `Transaction.driverPhone = normalizedSender`
   - Email: sender → `ClientEmail.email` → `Client.id` → transactions
+- **Candidate blocking**: after tenant scoping, a valid document date limits
+  candidates to ±30 days. Rarity counts are computed only inside that safe
+  block. When the printed date is absent, `receivedAt` is a weak 0.25-reliability
+  ranking signal and cannot support auto-confirmation.
 - **Persistence**: for AUTO_MATCHED we persist a single AUTO_CONFIRMED
   DocumentMatch. For NEEDS_REVIEW we persist all ranked candidates as
   CANDIDATE. All wrapped in `prisma.$transaction` so the doc status and
@@ -250,7 +276,17 @@ persistence.
   or `rematchUnmatched({ driverPhone })` to re-run the matcher over
   UNMATCHED documents in that scope. Covered by an integration test in
   `__tests__/rematch.test.ts`. Not wired to `Transaction.create` in this
-  build; would sit behind a Prisma extension in production.
+  build; would sit behind a Prisma extension in production. Batch rematching
+  uses maximum-weight one-to-one assignment, not greedy independent choices.
+- **Offline evaluation and calibration** (`lib/services/matcher-evaluation.ts`).
+  Computes ranking/automation/calibration metrics, selects a threshold at a
+  target precision, and fits a dependency-free isotonic calibrator. Only human
+  CONFIRMED decisions are eligible labels.
+- **Active-learning review order and audits**. The review queue prioritizes
+  threshold uncertainty, small candidate margins, and contradictions. A stable
+  2% sample of otherwise automatic decisions is routed to review for unbiased QA.
+- **Saudi ZATCA QR decoding** (`lib/extraction/zatca-qr.ts`). Mandatory TLV tags
+  enrich missing OCR fields without overwriting visible extracted values.
 - **`/review` UI**. Server component listing NEEDS_REVIEW documents with
   ranked candidates, per-signal confidence breakdown, and confirm/reject
   buttons wired to the safe-action server actions. Verified end-to-end
@@ -282,21 +318,18 @@ Shape:
 
 The scoring engine itself doesn't change — it's already line-shaped.
 
-## What I would improve with more time
+## What requires production data or infrastructure
 
-1. **Weight learning**: the current weights are hand-tuned. With a labeled
-   history of confirmed matches, I'd fit a small logistic model on the four
-   signals and back out weights. Better yet: expose the weights via a
-   feature flag so we can A/B them.
+1. **Fit and validate calibration**: the pipeline exists, but this repository
+   has zero human-labelled production decisions. I would require at least 100
+   labels for an initial report and substantially more before changing an
+   auto-match threshold. Split by time/client to avoid leakage.
 2. **Streaming ingestion** for large email attachments (multi-page PDFs).
    Right now we buffer in memory; a real system would stream to blob
    storage and pass the URL to the extractor.
-3. **Extractor-timeout guard**. `ingestDocument` awaits the extractor
-   without a timeout. Should wrap it in a `Promise.race` against a
-   configurable deadline and treat timeouts as FAILED.
-4. **Observability**: OpenTelemetry span around each ingestion, tagged
+3. **Observability**: OpenTelemetry span around each ingestion, tagged
    with the outcome — makes it trivial to alert on a spike in
    NEEDS_REVIEW or FAILED.
-5. **Real OCR extractor** behind the same interface — either a managed
+4. **Real OCR extractor** behind the same interface — either a managed
    document-AI service or a hosted vision model. Would keep the mock as the
    default for tests and CI so the suite stays offline and deterministic.

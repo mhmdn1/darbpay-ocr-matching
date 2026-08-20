@@ -7,6 +7,8 @@ import {
   type MatchResult,
 } from '@/lib/services/transaction-matcher';
 import { log } from '@/lib/logger';
+import { assignGlobally } from '@/lib/services/global-assignment';
+import { addCandidateFrequencies, candidateDateWindow } from '@/lib/services/document-ingestion';
 
 export interface RematchScope {
   clientId?: number;
@@ -50,12 +52,13 @@ export async function rematchUnmatched(
     },
   });
 
-  const results: RematchOutcome[] = [];
-
+  const plans: Array<{ documentId: number; result: MatchResult }> = [];
   for (const doc of docs) {
-    const candidates = await loadCandidatesForDocument(db, doc.source, doc.senderIdentifier);
+    const candidates = await loadCandidatesForDocument(
+      db, doc.source, doc.senderIdentifier, doc.documentDate?.toISOString() ?? null,
+    );
     if (candidates.length === 0) {
-      results.push({ documentId: doc.id, outcome: 'UNMATCHED', candidates: 0 });
+      plans.push({ documentId: doc.id, result: { outcome: 'UNMATCHED', candidates: [] } });
       continue;
     }
 
@@ -65,15 +68,53 @@ export async function rematchUnmatched(
         merchantName: doc.merchantName,
         totalAmount: doc.totalAmount,
         currency: doc.currency,
-        documentDate: doc.documentDate?.toISOString() ?? null,
+        documentDate: (doc.documentDate ?? doc.receivedAt).toISOString(),
+        dateSource: doc.documentDate ? 'DOCUMENT' : 'RECEIVED_AT',
         cardLast4: doc.cardLast4,
+        vatNumber: doc.vatNumber,
+        invoiceNumber: doc.invoiceNumber,
+        authorizationCode: doc.authorizationCode,
+        fieldConfidences: parseFieldConfidences(doc.fieldConfidences),
       },
       candidates,
     );
 
     if (result.outcome === 'UNMATCHED') {
-      results.push({ documentId: doc.id, outcome: 'UNMATCHED', candidates: 0 });
+      plans.push({ documentId: doc.id, result });
       continue;
+    }
+
+    plans.push({ documentId: doc.id, result });
+  }
+
+  const assignments = assignGlobally(plans.flatMap((plan) =>
+    plan.result.candidates.map((candidate) => ({
+      documentId: plan.documentId,
+      transactionId: candidate.transactionId,
+      score: candidate.confidence,
+    })),
+  ));
+  const assignedTransaction = new Map(assignments.map((assignment) => [assignment.documentId, assignment.transactionId]));
+  const results: RematchOutcome[] = [];
+
+  for (const plan of plans) {
+    let result = plan.result;
+    if (result.outcome === 'UNMATCHED') {
+      results.push({ documentId: plan.documentId, outcome: 'UNMATCHED', candidates: 0 });
+      continue;
+    }
+
+    const assignedId = assignedTransaction.get(plan.documentId);
+    if (assignedId == null) {
+      // A stronger document won every shared transaction. Keep this one human-
+      // reviewable instead of greedily auto-confirming a duplicate claim.
+      result = { ...result, outcome: 'NEEDS_REVIEW' };
+    } else if (assignedId !== result.candidates[0].transactionId) {
+      const assigned = result.candidates.find((candidate) => candidate.transactionId === assignedId)!;
+      result = {
+        outcome: 'NEEDS_REVIEW',
+        candidates: [assigned, ...result.candidates.filter((candidate) => candidate.transactionId !== assignedId)],
+      };
     }
 
     const isAuto = result.outcome === 'AUTO_MATCHED';
@@ -81,38 +122,47 @@ export async function rematchUnmatched(
       if (isAuto) {
         await tx.documentMatch.create({
           data: {
-            documentId: doc.id,
+            documentId: plan.documentId,
             transactionId: result.candidates[0].transactionId,
             confidence: result.candidates[0].confidence,
             signals: JSON.stringify(result.candidates[0].signals),
+            evidenceCoverage: result.candidates[0].evidenceCoverage,
+            contradictions: JSON.stringify(result.candidates[0].contradictions),
+            rank: 1,
             status: 'AUTO_CONFIRMED',
             decidedBy: 'system-rematch',
             decidedAt: new Date(),
           },
         });
-        await tx.document.update({ where: { id: doc.id }, data: { status: 'MATCHED' } });
+        await tx.document.update({ where: { id: plan.documentId }, data: { status: 'MATCHED' } });
       } else {
-        for (const c of result.candidates) {
+        for (const [index, c] of result.candidates.entries()) {
           await tx.documentMatch.create({
             data: {
-              documentId: doc.id,
+              documentId: plan.documentId,
               transactionId: c.transactionId,
               confidence: c.confidence,
               signals: JSON.stringify(c.signals),
+              evidenceCoverage: c.evidenceCoverage,
+              contradictions: JSON.stringify(c.contradictions),
+              rank: index + 1,
               status: 'CANDIDATE',
             },
           });
         }
-        await tx.document.update({ where: { id: doc.id }, data: { status: 'NEEDS_REVIEW' } });
+        await tx.document.update({
+          where: { id: plan.documentId },
+          data: { status: 'NEEDS_REVIEW', reviewReason: 'REMATCH_REVIEW' },
+        });
       }
     });
 
     log.info('rematch promoted document', {
-      documentId: doc.id,
+      documentId: plan.documentId,
       outcome: result.outcome,
       candidates: result.candidates.length,
     });
-    results.push({ documentId: doc.id, outcome: result.outcome, candidates: result.candidates.length });
+    results.push({ documentId: plan.documentId, outcome: result.outcome, candidates: result.candidates.length });
   }
 
   return results;
@@ -122,7 +172,9 @@ async function loadCandidatesForDocument(
   db: PrismaClient,
   source: string,
   senderIdentifier: string,
+  documentDate: string | null,
 ): Promise<CandidateTransaction[]> {
+  const dateWindow = candidateDateWindow(documentDate);
   const confirmedStatuses: MatchStatus[] = [MatchStatus.CONFIRMED, MatchStatus.AUTO_CONFIRMED];
   const includeConfirmed = {
     documents: { where: { status: { in: confirmedStatuses } }, select: { id: true } },
@@ -130,10 +182,10 @@ async function loadCandidatesForDocument(
 
   if (source === 'WHATSAPP') {
     const txs = await db.transaction.findMany({
-      where: { driverPhone: senderIdentifier },
+      where: { driverPhone: senderIdentifier, ...(dateWindow ? { transactionAt: dateWindow } : {}) },
       include: includeConfirmed,
     });
-    return txs.map((tx) => ({
+    return addCandidateFrequencies(txs.map((tx) => ({
       id: tx.id,
       cardLast4: tx.cardLast4,
       merchantName: tx.merchantName,
@@ -141,16 +193,21 @@ async function loadCandidatesForDocument(
       currency: tx.currency,
       transactionAt: tx.transactionAt,
       hasConfirmedDocument: tx.documents.length > 0,
-    }));
+      merchantVatNumber: tx.merchantVatNumber,
+      invoiceNumber: tx.invoiceNumber,
+      authorizationCode: tx.authorizationCode,
+      merchantCategory: tx.merchantCategory,
+      merchantCity: tx.merchantCity,
+    })));
   }
 
   const senderRow = await db.clientEmail.findUnique({ where: { email: senderIdentifier.toLowerCase() } });
   if (!senderRow) return [];
   const txs = await db.transaction.findMany({
-    where: { clientId: senderRow.clientId },
+    where: { clientId: senderRow.clientId, ...(dateWindow ? { transactionAt: dateWindow } : {}) },
     include: includeConfirmed,
   });
-  return txs.map((tx) => ({
+  return addCandidateFrequencies(txs.map((tx) => ({
     id: tx.id,
     cardLast4: tx.cardLast4,
     merchantName: tx.merchantName,
@@ -158,5 +215,18 @@ async function loadCandidatesForDocument(
     currency: tx.currency,
     transactionAt: tx.transactionAt,
     hasConfirmedDocument: tx.documents.length > 0,
-  }));
+    merchantVatNumber: tx.merchantVatNumber,
+    invoiceNumber: tx.invoiceNumber,
+    authorizationCode: tx.authorizationCode,
+    merchantCategory: tx.merchantCategory,
+    merchantCity: tx.merchantCity,
+  })));
+}
+
+function parseFieldConfidences(value: string | null): Record<string, number> | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, number> : undefined;
+  } catch { return undefined; }
 }

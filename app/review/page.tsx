@@ -5,6 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { format } from 'date-fns';
 import { AlertCircle, ArrowUpRight, CheckCircle2, Clock3, FileSearch, Inbox, Mail, MessageCircle, ReceiptText, ShieldCheck } from 'lucide-react';
 import { DecisionButtons } from './decision-buttons';
+import { MATCHER_CONFIG } from '@/lib/services/transaction-matcher';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +19,9 @@ interface CandidateRow {
   cardLast4: string;
   confidence: number;
   signals: Record<string, number>;
+  evidenceCoverage: number;
+  contradictions: string[];
+  rank: number | null;
 }
 
 interface DocRow {
@@ -35,6 +39,7 @@ interface DocRow {
   extractionConfidence: number | null;
   receivedAt: Date;
   errorMessage: string | null;
+  reviewReason: string | null;
   candidates: CandidateRow[];
 }
 
@@ -49,13 +54,16 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
     orderBy: { receivedAt: 'desc' },
     include: {
       matches: {
+        // Only undecided rows are actionable. Keeping REJECTED siblings in
+        // this list leaves stale Match/Reject buttons after revalidation.
+        where: { status: 'CANDIDATE' },
         include: { transaction: true },
         orderBy: { confidence: 'desc' },
       },
     },
   });
 
-  return docs.map((d) => ({
+  const rows = docs.map((d) => ({
     id: d.id,
     source: d.source,
     senderIdentifier: d.senderIdentifier,
@@ -70,7 +78,10 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
     extractionConfidence: d.extractionConfidence,
     receivedAt: d.receivedAt,
     errorMessage: d.errorMessage,
-    candidates: d.matches.map((m) => ({
+    reviewReason: d.reviewReason,
+    candidates: d.matches
+      .filter((m) => m.confidence >= MATCHER_CONFIG.thresholds.candidateDisplay)
+      .map((m) => ({
       matchId: m.id,
       transactionId: m.transactionId,
       merchantName: m.transaction.merchantName,
@@ -80,8 +91,14 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
       cardLast4: m.transaction.cardLast4,
       confidence: m.confidence,
       signals: safeParseSignals(m.signals),
-    })),
+      evidenceCoverage: m.evidenceCoverage,
+      contradictions: safeParseArray(m.contradictions),
+      rank: m.rank,
+      })),
   }));
+  return status === 'NEEDS_REVIEW'
+    ? rows.sort((a, b) => reviewPriority(b) - reviewPriority(a))
+    : rows;
 }
 
 function safeParseSignals(s: string): Record<string, number> {
@@ -91,6 +108,23 @@ function safeParseSignals(s: string): Record<string, number> {
   } catch {
     return {};
   }
+}
+
+function safeParseArray(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch { return []; }
+}
+
+function reviewPriority(document: DocRow): number {
+  const top = document.candidates[0];
+  if (!top) return 0;
+  const second = document.candidates[1];
+  const gap = second ? top.confidence - second.confidence : top.confidence;
+  const thresholdUncertainty = 1 - Math.min(1, Math.abs(top.confidence - 0.82) / 0.27);
+  const ambiguity = Math.max(0, 0.12 - gap) / 0.12;
+  return thresholdUncertainty + ambiguity + top.contradictions.length * 0.25;
 }
 
 export default async function ReviewPage() {
@@ -126,7 +160,7 @@ export default async function ReviewPage() {
             <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#3157d5]">Finance operations</p>
             <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Document review</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-              Validate uncertain receipt matches. Every recommendation includes the signals behind its confidence score.
+              Validate uncertain receipt matches. Every recommendation includes its evidence and contradictions.
             </p>
           </div>
           <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -146,7 +180,7 @@ export default async function ReviewPage() {
           <div className="flex items-center justify-between">
             <div>
               <h2 id="needs-review-heading" className="text-xl font-semibold">Needs your attention</h2>
-              <p className="mt-1 text-sm text-slate-500">Highest-confidence candidates appear first.</p>
+              <p className="mt-1 text-sm text-slate-500">Most uncertain and ambiguous decisions appear first.</p>
             </div>
             {needsReview.length > 0 && (
               <Badge className="bg-[#eaf0ff] text-[#3157d5] hover:bg-[#eaf0ff]">{needsReview.length} open</Badge>
@@ -217,7 +251,11 @@ function DocumentCard({ doc }: { doc: DocRow }) {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="truncate text-lg font-semibold">{doc.merchantName ?? 'Unknown merchant'}</h3>
-              <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">Review needed</Badge>
+              <Badge className={doc.reviewReason === 'AUTO_MATCH_AUDIT'
+                ? 'bg-violet-50 text-violet-700 hover:bg-violet-50'
+                : 'bg-amber-50 text-amber-700 hover:bg-amber-50'}>
+                {doc.reviewReason === 'AUTO_MATCH_AUDIT' ? 'Quality audit' : 'Review needed'}
+              </Badge>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-500">
               <SourceLabel source={doc.source} />
@@ -233,7 +271,7 @@ function DocumentCard({ doc }: { doc: DocRow }) {
             <p className="mt-1 text-xl font-semibold">{formatMoney(doc.totalAmount, doc.currency)}</p>
           </div>
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Best match</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Match score</p>
             <p className="mt-1 text-xl font-semibold text-[#3157d5]">{Math.round(topConfidence * 100)}%</p>
           </div>
         </div>
@@ -264,6 +302,14 @@ function DocumentCard({ doc }: { doc: DocRow }) {
                       {signalLabel(name)} <strong className="ml-1 text-slate-800">{Math.round(score * 100)}%</strong>
                     </span>
                   ))}
+                  <span className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200">
+                    Evidence <strong className="ml-1 text-slate-800">{Math.round(c.evidenceCoverage * 100)}%</strong>
+                  </span>
+                  {c.contradictions.map((contradiction) => (
+                    <span key={contradiction} className="rounded-md bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-700 ring-1 ring-rose-200">
+                      {contradiction.replaceAll('_', ' ')}
+                    </span>
+                  ))}
                 </div>
               </div>
               <div className="flex items-center justify-between gap-5 border-t border-slate-200/70 pt-4 lg:w-[270px] lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
@@ -284,7 +330,12 @@ function DocumentCard({ doc }: { doc: DocRow }) {
 }
 
 function signalLabel(signal: string): string {
-  return signal === 'cardLast4' ? 'Card' : signal.charAt(0).toUpperCase() + signal.slice(1);
+  const labels: Record<string, string> = {
+    cardLast4: 'Card', merchantRarity: 'Merchant rarity', amountRarity: 'Amount rarity',
+    merchantCity: 'City', merchantBranch: 'Branch', dateFallback: 'Received date',
+    vatNumber: 'VAT number', invoiceNumber: 'Invoice number', authorizationCode: 'Authorization',
+  };
+  return labels[signal] ?? signal.charAt(0).toUpperCase() + signal.slice(1);
 }
 
 function StatusBadge({ status }: { status: string }) {

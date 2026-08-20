@@ -9,6 +9,15 @@ export interface ExtractedDocument {
   documentDate: string | null;     // ISO 8601
   cardLast4: string | null;
   invoiceNumber: string | null;
+  authorizationCode?: string | null;
+  /** Base64 ZATCA TLV payload when the OCR/vision provider detects a QR code. */
+  qrPayload?: string | null;
+  /** Per-field OCR reliabilities. Missing values mean "provider did not report it". */
+  fieldConfidences?: Partial<Record<
+    'merchantName' | 'totalAmount' | 'currency' | 'documentDate' |
+    'cardLast4' | 'vatNumber' | 'invoiceNumber' | 'authorizationCode',
+    number
+  >>;
   rawText: string;
   extractionConfidence: number;    // 0..1, the OCR's own confidence
 }

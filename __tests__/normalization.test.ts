@@ -1,5 +1,6 @@
 import {
   normalizeMerchant,
+  parseMerchantDescriptor,
   scoreMerchant,
   scoreAmount,
   scoreDate,
@@ -18,6 +19,7 @@ describe('normalizeMerchant', () => {
     ['ALRAJHI AUTO SVC RUH',      'ALRAJHI AUTO SVC'],
     // punctuation stripped, whitespace collapsed
     ['Al-Baik  Restaurant, Jeddah', 'AL BAIK RESTAURANT JEDDAH'],
+    ['مَحَطَّة الـنُّور فرع ٠٤', 'النور'],
   ])('%s → %s', (input, expected) => {
     expect(normalizeMerchant(input)).toBe(expected);
   });
@@ -25,6 +27,12 @@ describe('normalizeMerchant', () => {
   test('empty input yields empty output', () => {
     expect(normalizeMerchant('')).toBe('');
     expect(normalizeMerchant('   ')).toBe('');
+  });
+
+  test('normalization is idempotent across Arabic and Latin examples', () => {
+    for (const value of ['ALFANAR ST 04 RUH', 'مَحَطَّة الـنُّور فرع ٠٤', 'Al-Baik, Jeddah']) {
+      expect(normalizeMerchant(normalizeMerchant(value))).toBe(normalizeMerchant(value));
+    }
   });
 });
 
@@ -47,6 +55,27 @@ describe('scoreMerchant — real-world messy strings', () => {
   test('empty on either side → 0', () => {
     expect(scoreMerchant('', 'Alfanar')).toBe(0);
     expect(scoreMerchant('Alfanar', '')).toBe(0);
+  });
+
+  test('similarity is symmetric and bounded', () => {
+    const names = ['Alfanar Fuel', 'الفنار للوقود', 'Panda Supermarket', ''];
+    for (const a of names) for (const b of names) {
+      expect(scoreMerchant(a, b)).toBe(scoreMerchant(b, a));
+      expect(scoreMerchant(a, b)).toBeGreaterThanOrEqual(0);
+      expect(scoreMerchant(a, b)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test('Arabic orthographic variants normalize consistently', () => {
+    expect(scoreMerchant('الأنوار', 'الانوار')).toBe(1);
+  });
+});
+
+describe('parseMerchantDescriptor', () => {
+  test('keeps chain, city, and branch as separate evidence', () => {
+    expect(parseMerchantDescriptor('ALFANAR FUEL ST 04 RUH')).toEqual({
+      core: 'ALFANAR FUEL', city: 'RIYADH', branch: '04',
+    });
   });
 });
 
@@ -71,6 +100,10 @@ describe('scoreAmount', () => {
     expect(scoreAmount(1000, 10000)).toBe(0);
   });
 
+  test('tip tolerance can be disabled for non-hospitality merchants', () => {
+    expect(scoreAmount(5750, 6325, { allowTip: false })).toBe(0);
+  });
+
   test('receipt larger than charge (only tiny rounding overshoot allowed)', () => {
     expect(scoreAmount(6450, 6325)).toBe(0.9); // ~1.9% overshoot, above exact band
     expect(scoreAmount(7000, 6325)).toBe(0);   // ~10% overshoot — implausible
@@ -86,9 +119,9 @@ describe('scoreAmount', () => {
 describe('scoreDate', () => {
   const base = new Date('2025-06-14T08:00:00Z');
 
-  test('same day → 1', () => {
+  test('same instant is exact; within 24h across a Riyadh date boundary is near-exact', () => {
     expect(scoreDate(base, base)).toBe(1);
-    expect(scoreDate(new Date('2025-06-14T23:00:00Z'), base)).toBe(1);
+    expect(scoreDate(new Date('2025-06-14T23:00:00Z'), base)).toBe(0.98);
   });
 
   test('1 day apart still very close', () => {

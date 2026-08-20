@@ -1,301 +1,403 @@
 /**
- * Transaction matcher — pure function.
+ * Explainable, deterministic transaction matcher.
  *
- * Given a document's extracted fields and a set of candidate transactions
- * (already scoped by sender at the caller), score each transaction on four
- * signals and decide whether the result is auto-matchable, needs a human,
- * or should be dropped. All scoring parameters live in `MATCHER_CONFIG` at
- * the top of this file; rationale lives in IMPLEMENTATION.md.
+ * `confidence` is a heuristic ranking score, not a calibrated probability.
+ * The offline evaluation module can calibrate it once reviewer-labelled data
+ * exists. Until then, evidence coverage and contradictions gate automation.
  */
 
-// ── Input / output types ────────────────────────────────────────────────────
+export interface FieldConfidences {
+  merchantName?: number;
+  totalAmount?: number;
+  currency?: number;
+  documentDate?: number;
+  cardLast4?: number;
+  vatNumber?: number;
+  invoiceNumber?: number;
+  authorizationCode?: number;
+}
 
 export interface ExtractedFields {
   documentType: 'RECEIPT' | 'TAX_INVOICE' | 'UNKNOWN';
   merchantName: string | null;
-  totalAmount: number | null;   // minor units
+  totalAmount: number | null;
   currency: string | null;
-  documentDate: string | null;  // ISO 8601
+  documentDate: string | null;
+  dateSource?: 'DOCUMENT' | 'RECEIVED_AT';
   cardLast4: string | null;
+  vatNumber?: string | null;
+  invoiceNumber?: string | null;
+  authorizationCode?: string | null;
+  fieldConfidences?: FieldConfidences;
 }
 
 export interface CandidateTransaction {
   id: number;
   cardLast4: string;
   merchantName: string;
-  amount: number;               // minor units
+  amount: number;
   currency: string;
   transactionAt: Date;
-  /** True when a CONFIRMED or AUTO_CONFIRMED match already exists. */
   hasConfirmedDocument: boolean;
+  merchantVatNumber?: string | null;
+  invoiceNumber?: string | null;
+  authorizationCode?: string | null;
+  merchantCategory?: string | null;
+  merchantCity?: string | null;
+  /** Frequencies inside the tenant/date candidate block. */
+  merchantFrequency?: number;
+  amountFrequency?: number;
 }
 
 export type MatchOutcome = 'AUTO_MATCHED' | 'NEEDS_REVIEW' | 'UNMATCHED';
 
 export interface MatchCandidate {
   transactionId: number;
-  confidence: number;                 // 0..1
-  signals: Record<string, number>;    // per-signal 0..1 breakdown, for explainability
+  /** Heuristic ranking score (0..1), pending calibration on reviewer labels. */
+  confidence: number;
+  signals: Record<string, number>;
+  evidenceCoverage: number;
+  availableSignals: string[];
+  contradictions: string[];
 }
 
 export interface MatchResult {
   outcome: MatchOutcome;
-  candidates: MatchCandidate[];       // ranked, best first
+  candidates: MatchCandidate[];
 }
 
-// ── Config (tunable — justified in IMPLEMENTATION.md) ───────────────────────
-
 export const MATCHER_CONFIG = {
-  weights: {
-    amount:    0.30,
-    date:      0.20,
-    merchant:  0.25,
-    cardLast4: 0.25,
-  },
+  weights: { amount: 0.30, date: 0.20, merchant: 0.25, cardLast4: 0.25 },
   thresholds: {
-    /** Top candidate must reach this to be considered at all. */
-    review:        0.55,
-    /** Top candidate must reach this AND lead the runner-up by `autoMatchGap` to auto-match. */
-    autoMatch:     0.82,
-    autoMatchGap:  0.12,
-    /** Second candidate within this margin of the top => review (near-tie). */
-    tieGap:        0.05,
+    review: 0.55,
+    candidateDisplay: 0.35,
+    autoMatch: 0.82,
+    autoMatchGap: 0.12,
+    minAutoEvidenceCoverage: 0.70,
+    minAutoSignals: 3,
   },
   amount: {
-    exactHalalas: 100,          // ±1 SAR treated as exact (VAT rounding)
-    tipMaxRatio:  0.30,         // receipt up to 30% less than tx allowed as tip
+    absoluteToleranceHalalas: 100,
+    relativeTolerance: 0.002,
+    tipMaxRatio: 0.30,
   },
-  date: {
-    sameDayHours: 24,
-    nearDays:     3,
-    maxDays:      14,
-  },
-  cardLast4: {
-    /** Multiplier applied to overall confidence when receipt shows a card that does not match. */
-    mismatchPenalty: 0.25,
-  },
-  /** Cap the candidates array returned for review. */
+  date: { nearDays: 3, maxDays: 14, timezone: 'Asia/Riyadh' },
+  extraction: { hardContradictionConfidence: 0.80 },
+  uniqueness: { merchantBonus: 0.02, amountBonus: 0.01 },
   maxCandidates: 5,
 } as const;
 
-// ── Public entry point ──────────────────────────────────────────────────────
+export function matchDocument(doc: ExtractedFields, transactions: CandidateTransaction[]): MatchResult {
+  if (transactions.length === 0) return { outcome: 'UNMATCHED', candidates: [] };
 
-export function matchDocument(
-  doc: ExtractedFields,
-  transactions: CandidateTransaction[],
-): MatchResult {
-  if (transactions.length === 0) {
-    return { outcome: 'UNMATCHED', candidates: [] };
-  }
-
-  const scored: MatchCandidate[] = transactions
+  const scored = transactions
     .map((tx) => scoreTransaction(doc, tx))
-    .filter((c) => c.confidence > 0);
+    .filter((candidate) => candidate.confidence >= MATCHER_CONFIG.thresholds.candidateDisplay)
+    .sort((a, b) => b.confidence - a.confidence || a.transactionId - b.transactionId)
+    .slice(0, MATCHER_CONFIG.maxCandidates);
 
-  scored.sort((a, b) => b.confidence - a.confidence);
-
-  const trimmed = scored.slice(0, MATCHER_CONFIG.maxCandidates);
-  const top = trimmed[0];
-
+  const top = scored[0];
   if (!top || top.confidence < MATCHER_CONFIG.thresholds.review) {
     return { outcome: 'UNMATCHED', candidates: [] };
   }
 
-  const second = trimmed[1];
-  const topTx = transactions.find((t) => t.id === top.transactionId)!;
-  const nearTie = second && (top.confidence - second.confidence) < MATCHER_CONFIG.thresholds.tieGap;
+  const second = scored[1];
   const gap = second ? top.confidence - second.confidence : top.confidence;
-
+  const topTx = transactions.find((tx) => tx.id === top.transactionId)!;
   const canAutoMatch =
     top.confidence >= MATCHER_CONFIG.thresholds.autoMatch &&
     gap >= MATCHER_CONFIG.thresholds.autoMatchGap &&
-    !topTx.hasConfirmedDocument &&
-    !nearTie;
+    top.evidenceCoverage >= MATCHER_CONFIG.thresholds.minAutoEvidenceCoverage &&
+    top.availableSignals.length >= MATCHER_CONFIG.thresholds.minAutoSignals &&
+    doc.dateSource !== 'RECEIVED_AT' &&
+    top.contradictions.length === 0 &&
+    !topTx.hasConfirmedDocument;
 
-  if (canAutoMatch) {
-    return { outcome: 'AUTO_MATCHED', candidates: trimmed };
-  }
-
-  return { outcome: 'NEEDS_REVIEW', candidates: trimmed };
+  return { outcome: canAutoMatch ? 'AUTO_MATCHED' : 'NEEDS_REVIEW', candidates: scored };
 }
 
-// ── Scoring ─────────────────────────────────────────────────────────────────
-
-function scoreTransaction(doc: ExtractedFields, tx: CandidateTransaction): MatchCandidate {
+export function scoreTransaction(doc: ExtractedFields, tx: CandidateTransaction): MatchCandidate {
   const signals: Record<string, number> = {};
-  const weightsAvailable: number[] = [];
-  const weightedScores: number[] = [];
+  const availableSignals: string[] = [];
+  const contradictions: string[] = [];
+  let effectiveWeight = 0;
+  let weightedScore = 0;
 
-  // Amount
+  const addSignal = (name: keyof typeof MATCHER_CONFIG.weights, score: number, sourceConfidence = 1) => {
+    const reliability = clamp01(sourceConfidence);
+    const weight = MATCHER_CONFIG.weights[name] * reliability;
+    signals[name] = clamp01(score);
+    availableSignals.push(name);
+    effectiveWeight += weight;
+    weightedScore += signals[name] * weight;
+  };
+
   if (doc.totalAmount != null) {
-    if (doc.currency && tx.currency && doc.currency !== tx.currency) {
-      signals.amount = 0;
-    } else {
-      signals.amount = scoreAmount(doc.totalAmount, tx.amount);
+    const currencyMismatch = Boolean(doc.currency && tx.currency && normalizeCurrency(doc.currency) !== normalizeCurrency(tx.currency));
+    addSignal(
+      'amount',
+      currencyMismatch ? 0 : scoreAmount(doc.totalAmount, tx.amount, { allowTip: isTipEligible(doc, tx) }),
+      doc.fieldConfidences?.totalAmount,
+    );
+    if (currencyMismatch && fieldConfidence(doc, 'currency') >= MATCHER_CONFIG.extraction.hardContradictionConfidence) {
+      contradictions.push('currency_mismatch');
+      signals.currency = 0;
     }
-    weightsAvailable.push(MATCHER_CONFIG.weights.amount);
-    weightedScores.push(signals.amount * MATCHER_CONFIG.weights.amount);
   }
 
-  // Date
   if (doc.documentDate) {
-    const parsed = Date.parse(doc.documentDate);
-    if (!Number.isNaN(parsed)) {
-      signals.date = scoreDate(new Date(parsed), tx.transactionAt);
-      weightsAvailable.push(MATCHER_CONFIG.weights.date);
-      weightedScores.push(signals.date * MATCHER_CONFIG.weights.date);
+    const parsed = new Date(doc.documentDate);
+    if (Number.isFinite(parsed.getTime())) {
+      const reliability = doc.dateSource === 'RECEIVED_AT'
+        ? Math.min(doc.fieldConfidences?.documentDate ?? 0.25, 0.25)
+        : doc.fieldConfidences?.documentDate;
+      if (doc.dateSource === 'RECEIVED_AT') signals.dateFallback = 1;
+      addSignal('date', scoreDate(parsed, tx.transactionAt), reliability);
     }
   }
 
-  // Merchant
   if (doc.merchantName) {
-    signals.merchant = scoreMerchant(doc.merchantName, tx.merchantName);
-    weightsAvailable.push(MATCHER_CONFIG.weights.merchant);
-    weightedScores.push(signals.merchant * MATCHER_CONFIG.weights.merchant);
+    let merchantScore = scoreMerchant(doc.merchantName, tx.merchantName);
+    const docDescriptor = parseMerchantDescriptor(doc.merchantName);
+    const txDescriptor = parseMerchantDescriptor(`${tx.merchantName} ${tx.merchantCity ?? ''}`);
+    if (docDescriptor.city && txDescriptor.city) {
+      signals.merchantCity = docDescriptor.city === txDescriptor.city ? 1 : 0;
+      merchantScore = 0.85 * merchantScore + 0.15 * signals.merchantCity;
+    }
+    if (docDescriptor.branch && txDescriptor.branch) {
+      signals.merchantBranch = docDescriptor.branch === txDescriptor.branch ? 1 : 0;
+      merchantScore = 0.9 * merchantScore + 0.1 * signals.merchantBranch;
+    }
+    addSignal('merchant', merchantScore, doc.fieldConfidences?.merchantName);
   }
 
-  // Card last 4
-  let cardMismatch = false;
   if (doc.cardLast4) {
-    const match = doc.cardLast4 === tx.cardLast4;
-    signals.cardLast4 = match ? 1 : 0;
-    weightsAvailable.push(MATCHER_CONFIG.weights.cardLast4);
-    weightedScores.push(signals.cardLast4 * MATCHER_CONFIG.weights.cardLast4);
-    if (!match) cardMismatch = true;
+    const matches = normalizeDigits(doc.cardLast4) === normalizeDigits(tx.cardLast4);
+    addSignal('cardLast4', matches ? 1 : 0, doc.fieldConfidences?.cardLast4);
+    if (!matches && fieldConfidence(doc, 'cardLast4') >= MATCHER_CONFIG.extraction.hardContradictionConfidence) {
+      contradictions.push('card_last4_mismatch');
+    }
   }
 
-  const totalWeight = weightsAvailable.reduce((s, w) => s + w, 0);
-  const rawConfidence = totalWeight > 0 ? sum(weightedScores) / totalWeight : 0;
-  const confidence = cardMismatch
-    ? rawConfidence * MATCHER_CONFIG.cardLast4.mismatchPenalty
-    : rawConfidence;
+  scoreExactIdentifier('vatNumber', doc.vatNumber, tx.merchantVatNumber, doc, signals, contradictions);
+  scoreExactIdentifier('invoiceNumber', doc.invoiceNumber, tx.invoiceNumber, doc, signals, contradictions);
+  scoreExactIdentifier('authorizationCode', doc.authorizationCode, tx.authorizationCode, doc, signals, contradictions);
+
+  let confidence = effectiveWeight > 0 ? weightedScore / effectiveWeight : 0;
+  const exactStrongIdentifier = signals.vatNumber === 1 || signals.invoiceNumber === 1 || signals.authorizationCode === 1;
+  if (exactStrongIdentifier && confidence >= 0.70) confidence = Math.max(confidence, 0.97);
+
+  // Rare evidence is more discriminative. Keep the adjustment deliberately
+  // small until its value is calibrated against reviewer-labelled outcomes.
+  if ((signals.merchant ?? 0) >= 0.6 && tx.merchantFrequency) {
+    signals.merchantRarity = round3(1 / Math.sqrt(Math.max(1, tx.merchantFrequency)));
+    confidence += MATCHER_CONFIG.uniqueness.merchantBonus * signals.merchantRarity;
+  }
+  if ((signals.amount ?? 0) >= 0.8 && tx.amountFrequency) {
+    signals.amountRarity = round3(1 / Math.sqrt(Math.max(1, tx.amountFrequency)));
+    confidence += MATCHER_CONFIG.uniqueness.amountBonus * signals.amountRarity;
+  }
+
+  if (contradictions.length > 0) confidence *= 0.35 ** contradictions.length;
 
   return {
     transactionId: tx.id,
-    confidence: round3(confidence),
+    confidence: round3(clamp01(confidence)),
     signals: mapValues(signals, round3),
+    evidenceCoverage: round3(clamp01(effectiveWeight)),
+    availableSignals,
+    contradictions,
   };
 }
 
-// ── Individual signal scorers ───────────────────────────────────────────────
-
-/** Amount score handles VAT rounding and restaurant-tip cases. */
-export function scoreAmount(docAmount: number, txAmount: number): number {
+export function scoreAmount(
+  docAmount: number,
+  txAmount: number,
+  options: { allowTip?: boolean } = { allowTip: true },
+): number {
   if (docAmount <= 0 || txAmount <= 0) return 0;
   const diff = Math.abs(docAmount - txAmount);
-  if (diff <= MATCHER_CONFIG.amount.exactHalalas) return 1;
+  const exactTolerance = Math.max(
+    MATCHER_CONFIG.amount.absoluteToleranceHalalas,
+    Math.round(txAmount * MATCHER_CONFIG.amount.relativeTolerance),
+  );
+  if (diff <= exactTolerance) return 1;
 
-  // Tip case: receipt total is smaller than card charge (customer added a tip).
-  if (docAmount < txAmount) {
+  if (docAmount < txAmount && options.allowTip !== false) {
     const ratio = diff / txAmount;
     if (ratio <= MATCHER_CONFIG.amount.tipMaxRatio) {
-      // 0% diff -> 1.0, tipMaxRatio -> 0.5, beyond -> 0
       return Math.max(0, 1 - (ratio / MATCHER_CONFIG.amount.tipMaxRatio) * 0.5);
     }
     return 0;
   }
 
-  // Receipt larger than charge — small rounding tolerance only.
   const ratio = diff / txAmount;
-  if (ratio <= 0.02) return 0.9; // 2% (rare VAT rounding overshoot)
-  return 0;
+  return docAmount > txAmount && ratio <= 0.02 ? 0.9 : 0;
 }
 
-/** Date score decays with distance in days. */
 export function scoreDate(docDate: Date, txDate: Date): number {
-  const hours = Math.abs(docDate.getTime() - txDate.getTime()) / (1000 * 60 * 60);
-  if (hours <= MATCHER_CONFIG.date.sameDayHours) return 1;
-  const days = hours / 24;
+  if (!Number.isFinite(docDate.getTime()) || !Number.isFinite(txDate.getTime())) return 0;
+  if (calendarDate(docDate) === calendarDate(txDate)) return 1;
+  const days = Math.abs(docDate.getTime() - txDate.getTime()) / 86_400_000;
+  if (days <= 1) return 0.98;
   if (days <= MATCHER_CONFIG.date.nearDays) {
-    return 1 - ((days - 1) / (MATCHER_CONFIG.date.nearDays - 1)) * 0.3; // 1.0 → 0.7
+    return 0.98 - ((days - 1) / (MATCHER_CONFIG.date.nearDays - 1)) * 0.28;
   }
   if (days <= MATCHER_CONFIG.date.maxDays) {
     return 0.7 - ((days - MATCHER_CONFIG.date.nearDays) /
-      (MATCHER_CONFIG.date.maxDays - MATCHER_CONFIG.date.nearDays)) * 0.5; // 0.7 → 0.2
+      (MATCHER_CONFIG.date.maxDays - MATCHER_CONFIG.date.nearDays)) * 0.5;
   }
   return 0;
 }
 
-/**
- * Merchant similarity. Normalizes both sides (strip noise words like
- * "STATION", branch numbers, city codes) and returns a Dice coefficient
- * on character bigrams — cheap, dependency-free, works well on short strings.
- */
 export function scoreMerchant(docName: string, txName: string): number {
   const a = normalizeMerchant(docName);
   const b = normalizeMerchant(txName);
   if (!a || !b) return 0;
-  if (a === b) return 1;
-
-  // Token overlap contributes half the score — catches "Alfanar Fuel Station"
-  // vs "ALFANAR FUEL ST 04 RUH" strongly even when bigrams disagree on tails.
-  const tokenScore = jaccardTokens(a, b);
-  const bigramScore = diceBigrams(a, b);
-  return round3(0.5 * tokenScore + 0.5 * bigramScore);
+  const nativeScore = merchantSimilarity(a, b);
+  const transliteratedScore = merchantSimilarity(transliterateArabic(a), transliterateArabic(b));
+  return round3(Math.max(nativeScore, transliteratedScore));
 }
-
-// ── Merchant normalization ──────────────────────────────────────────────────
 
 const MERCHANT_NOISE_TOKENS = new Set([
   'ST', 'STR', 'STA', 'STATION', 'STATIONS', 'STORE', 'STORES',
-  'BR', 'BRANCH', 'CO', 'LTD', 'LLC', 'INC', 'POS', 'PLC',
-  'THE', 'AND', 'OF', 'FOR',
-  // KSA city codes seen on acquirer strings
+  'BR', 'BRANCH', 'CO', 'LTD', 'LLC', 'INC', 'POS', 'PLC', 'THE', 'AND', 'OF', 'FOR',
   'RUH', 'JED', 'DMM', 'MED', 'MEC', 'AHD', 'KHR', 'TAI',
+  'محطة', 'فرع', 'شركة', 'مؤسسة',
 ]);
 
 export function normalizeMerchant(name: string): string {
   return name
     .toUpperCase()
     .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')      // strip diacritics
-    .replace(/[^A-Z0-9\s]/g, ' ')         // punctuation → space
+    .replace(/[\u0300-\u036f\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
+    .replace(/ـ/g, '')
+    .replace(/[إأآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/ؤ/g, 'و')
+    .replace(/ئ/g, 'ي')
+    .replace(/[٠-٩]/g, (digit) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)))
+    .replace(/[^A-Z0-9\u0600-\u06FF\s]/g, ' ')
     .split(/\s+/)
-    .filter((tok) => tok.length > 0)
-    .filter((tok) => !/^\d+$/.test(tok))  // drop pure numbers ("04")
-    .filter((tok) => !MERCHANT_NOISE_TOKENS.has(tok))
+    .filter(Boolean)
+    .filter((token) => !/^\d+$/.test(token))
+    .filter((token) => !MERCHANT_NOISE_TOKENS.has(token))
     .join(' ')
     .trim();
+}
+
+export interface MerchantDescriptor { core: string; city: string | null; branch: string | null }
+
+/** Keep location/branch evidence separate from the chain-level merchant name. */
+export function parseMerchantDescriptor(name: string): MerchantDescriptor {
+  const upper = name.toUpperCase().replace(/[^A-Z0-9\u0600-\u06FF\s]/g, ' ');
+  const cityAliases: Array<[RegExp, string]> = [
+    [/\b(?:RUH|RIYADH)\b|الرياض/, 'RIYADH'],
+    [/\b(?:JED|JEDDAH)\b|جدة/, 'JEDDAH'],
+    [/\b(?:DMM|DAMMAM)\b|الدمام/, 'DAMMAM'],
+    [/\b(?:MED|MADINAH)\b|المدينة/, 'MADINAH'],
+  ];
+  const city = cityAliases.find(([pattern]) => pattern.test(upper))?.[1] ?? null;
+  const explicitBranch = upper.match(/(?:\bBR(?:ANCH)?\b|فرع)\s*([0-9٠-٩]+)/)?.[1];
+  const acquirerBranch = upper.match(/\b(?:ST|STORE|BR)\s+([0-9]+)\b/)?.[1];
+  return {
+    core: normalizeMerchant(name),
+    city,
+    branch: explicitBranch ? normalizeDigits(explicitBranch) : acquirerBranch ?? null,
+  };
+}
+
+function scoreExactIdentifier(
+  name: 'vatNumber' | 'invoiceNumber' | 'authorizationCode',
+  docValue: string | null | undefined,
+  txValue: string | null | undefined,
+  doc: ExtractedFields,
+  signals: Record<string, number>,
+  contradictions: string[],
+): void {
+  if (!docValue || !txValue) return;
+  const matches = normalizeIdentifier(docValue) === normalizeIdentifier(txValue);
+  signals[name] = matches ? 1 : 0;
+  if (!matches && fieldConfidence(doc, name) >= MATCHER_CONFIG.extraction.hardContradictionConfidence) {
+    contradictions.push(`${name}_mismatch`);
+  }
+}
+
+function fieldConfidence(doc: ExtractedFields, field: keyof FieldConfidences): number {
+  return clamp01(doc.fieldConfidences?.[field] ?? 1);
+}
+
+function isTipEligible(doc: ExtractedFields, tx: CandidateTransaction): boolean {
+  if (doc.documentType !== 'RECEIPT') return false;
+  const category = `${tx.merchantCategory ?? ''} ${tx.merchantName}`.toUpperCase();
+  return /RESTAURANT|\bREST\b|CAFE|COFFEE|HOTEL|HOSPITALITY|مطعم|مقهى/.test(category);
+}
+
+function calendarDate(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: MATCHER_CONFIG.date.timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(date);
+}
+
+function normalizeCurrency(currency: string): string { return currency.trim().toUpperCase(); }
+function normalizeDigits(value: string): string {
+  return value.replace(/[٠-٩]/g, (digit) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit))).replace(/\D/g, '');
+}
+function normalizeIdentifier(value: string): string {
+  return value
+    .replace(/[٠-٩]/g, (digit) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)))
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9\u0600-\u06FF]/g, '');
+}
+
+function merchantSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  return 0.5 * jaccardTokens(a, b) + 0.5 * diceBigrams(a, b);
+}
+
+/** Lightweight cross-script fallback; aliases should replace this as labelled data grows. */
+function transliterateArabic(input: string): string {
+  const map: Record<string, string> = {
+    ا: 'A', ب: 'B', ت: 'T', ث: 'TH', ج: 'J', ح: 'H', خ: 'KH', د: 'D', ذ: 'TH',
+    ر: 'R', ز: 'Z', س: 'S', ش: 'SH', ص: 'S', ض: 'D', ط: 'T', ظ: 'Z', ع: 'A',
+    غ: 'GH', ف: 'F', ق: 'Q', ك: 'K', ل: 'L', م: 'M', ن: 'N', ه: 'H', و: 'W',
+    ي: 'Y', ة: 'H', ء: '',
+  };
+  return [...input].map((char) => map[char] ?? char).join('');
 }
 
 function jaccardTokens(a: string, b: string): number {
   const at = new Set(a.split(' '));
   const bt = new Set(b.split(' '));
   if (at.size === 0 || bt.size === 0) return 0;
-  let inter = 0;
-  for (const t of at) if (bt.has(t)) inter++;
-  return inter / (at.size + bt.size - inter);
+  let intersection = 0;
+  for (const token of at) if (bt.has(token)) intersection++;
+  return intersection / (at.size + bt.size - intersection);
 }
 
 function diceBigrams(a: string, b: string): number {
-  const bigrams = (s: string): string[] => {
-    const compact = s.replace(/\s+/g, '');
-    const out: string[] = [];
-    for (let i = 0; i < compact.length - 1; i++) out.push(compact.slice(i, i + 2));
-    return out;
+  const bigrams = (value: string) => {
+    const compact = value.replace(/\s+/g, '');
+    return Array.from({ length: Math.max(0, compact.length - 1) }, (_, index) => compact.slice(index, index + 2));
   };
   const ab = bigrams(a);
   const bb = bigrams(b);
   if (ab.length === 0 || bb.length === 0) return 0;
   const counts = new Map<string, number>();
-  for (const g of ab) counts.set(g, (counts.get(g) ?? 0) + 1);
+  for (const gram of ab) counts.set(gram, (counts.get(gram) ?? 0) + 1);
   let overlap = 0;
-  for (const g of bb) {
-    const c = counts.get(g);
-    if (c && c > 0) {
-      overlap++;
-      counts.set(g, c - 1);
-    }
+  for (const gram of bb) {
+    const count = counts.get(gram) ?? 0;
+    if (count > 0) { overlap++; counts.set(gram, count - 1); }
   }
   return (2 * overlap) / (ab.length + bb.length);
 }
 
-// ── tiny utils ──────────────────────────────────────────────────────────────
-
-function sum(xs: number[]): number { return xs.reduce((a, b) => a + b, 0); }
-function round3(n: number): number { return Math.round(n * 1000) / 1000; }
-function mapValues<T, U>(obj: Record<string, T>, fn: (v: T) => U): Record<string, U> {
-  const out: Record<string, U> = {};
-  for (const [k, v] of Object.entries(obj)) out[k] = fn(v);
-  return out;
+function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
+function round3(value: number): number { return Math.round(value * 1000) / 1000; }
+function mapValues(obj: Record<string, number>, fn: (value: number) => number): Record<string, number> {
+  return Object.fromEntries(Object.entries(obj).map(([key, value]) => [key, fn(value)]));
 }

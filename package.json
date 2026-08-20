@@ -8,10 +8,11 @@
     "start": "next start",
     "lint": "eslint",
     "test": "jest",
+    "matcher:evaluate": "node --import tsx scripts/evaluate-matcher.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:push": "prisma db push",
-    "db:seed": "tsx prisma/seed.ts",
+    "db:seed": "node --import tsx prisma/seed.ts",
     "db:studio": "prisma studio"
   },
   "dependencies": {

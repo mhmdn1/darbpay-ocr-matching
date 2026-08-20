@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import prisma from '@/lib/prisma';
-import { ingestDocument, sha256 } from '@/lib/services/document-ingestion';
+import { candidateDateWindow, ingestDocument, sha256, shouldAuditAutoMatch } from '@/lib/services/document-ingestion';
 import { MockExtractor } from '@/lib/extraction/mock-extractor';
 import type { DocumentExtractor, ExtractedDocument } from '@/lib/extraction/types';
 import { resetDatabase, seedBaseData, type SeededClient } from './helpers/db';
@@ -109,6 +109,56 @@ describe('ingestion — idempotency', () => {
     expect(second.outcome).toBe('DUPLICATE');
     expect(second.documentId).toBe(first.documentId);
   });
+
+  test('the same bytes from another tenant are not treated as a duplicate', async () => {
+    const bytes = await loadFixture('alrajhi-auto-tax-invoice.txt');
+    const first = await ingestDocument(
+      { source: 'EMAIL', externalId: 'msg_tenant_a', senderIdentifier: alRashed.email, fileBytes: bytes, mimeType: 'application/pdf' },
+      { extractor },
+    );
+    const second = await ingestDocument(
+      { source: 'EMAIL', externalId: 'msg_tenant_b', senderIdentifier: najm.email, fileBytes: bytes, mimeType: 'application/pdf' },
+      { extractor },
+    );
+    expect(second.outcome).not.toBe('DUPLICATE');
+    expect(second.documentId).not.toBe(first.documentId);
+  });
+
+  test('different scans with the same strong invoice identity dedupe within a tenant', async () => {
+    const semanticExtractor: DocumentExtractor = {
+      async extract() {
+        return {
+          documentType: 'TAX_INVOICE' as const, merchantName: 'Supplier', vatNumber: '310123456700003',
+          totalAmount: 12000, currency: 'SAR', documentDate: '2025-06-20T10:05:00Z',
+          cardLast4: '4411', invoiceNumber: 'INV-42', rawText: '', extractionConfidence: 0.99,
+        };
+      },
+    };
+    const first = await ingestDocument(
+      { source: 'EMAIL', externalId: 'scan_a', senderIdentifier: alRashed.email, fileBytes: Buffer.from('full scan'), mimeType: 'image/jpeg' },
+      { extractor: semanticExtractor },
+    );
+    const second = await ingestDocument(
+      { source: 'EMAIL', externalId: 'scan_b', senderIdentifier: alRashed.email, fileBytes: Buffer.from('cropped scan'), mimeType: 'image/jpeg' },
+      { extractor: semanticExtractor },
+    );
+    expect(second.outcome).toBe('DUPLICATE');
+    expect(second.documentId).toBe(first.documentId);
+  });
+});
+
+describe('ingestion policy helpers', () => {
+  test('candidate date blocking uses a symmetric 30-day window', () => {
+    const window = candidateDateWindow('2025-06-15T00:00:00Z')!;
+    expect((window.lte.getTime() - window.gte.getTime()) / 86_400_000).toBe(60);
+    expect(candidateDateWindow('invalid')).toBeNull();
+  });
+
+  test('auto-match audit sampling is deterministic and obeys boundary rates', () => {
+    expect(shouldAuditAutoMatch('doc-1', 0)).toBe(false);
+    expect(shouldAuditAutoMatch('doc-1', 1)).toBe(true);
+    expect(shouldAuditAutoMatch('doc-1', 0.2)).toBe(shouldAuditAutoMatch('doc-1', 0.2));
+  });
 });
 
 describe('ingestion — failure isolation', () => {
@@ -125,6 +175,16 @@ describe('ingestion — failure isolation', () => {
     const doc = await prisma.document.findUnique({ where: { id: r.documentId } });
     expect(doc!.status).toBe('FAILED');
     expect(doc!.errorMessage).toContain('OCR provider down');
+  });
+
+  test('extractor timeout is isolated as FAILED', async () => {
+    const stalledExtractor: DocumentExtractor = { extract: () => new Promise(() => undefined) };
+    const result = await ingestDocument(
+      { source: 'EMAIL', externalId: 'msg_timeout', senderIdentifier: alRashed.email, fileBytes: Buffer.from('slow'), mimeType: 'image/jpeg' },
+      { extractor: stalledExtractor, extractionTimeoutMs: 5 },
+    );
+    expect(result.outcome).toBe('FAILED');
+    expect(result.errorMessage).toContain('timed out');
   });
 
   test('extractor returns UNKNOWN with null amount → FAILED status', async () => {

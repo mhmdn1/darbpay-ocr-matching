@@ -90,6 +90,11 @@ describe('rejectMatchTx', () => {
     const first = await rejectMatchTx(matches[0].id, 'reviewer@example.com');
     expect(first.documentStatus).toBe('NEEDS_REVIEW');
 
+    const actionableAfterFirstReject = await prisma.documentMatch.findMany({
+      where: { documentId: document.id, status: 'CANDIDATE' },
+    });
+    expect(actionableAfterFirstReject.map((match) => match.id)).toEqual([matches[1].id]);
+
     const last = await rejectMatchTx(matches[1].id, 'reviewer@example.com');
     const replay = await rejectMatchTx(matches[1].id, 'reviewer@example.com');
     expect(last.documentStatus).toBe('UNMATCHED');

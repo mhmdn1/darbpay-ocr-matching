@@ -1,5 +1,6 @@
 import {
   matchDocument,
+  scoreTransaction,
   MATCHER_CONFIG,
   type CandidateTransaction,
   type ExtractedFields,
@@ -137,6 +138,11 @@ describe('matchDocument — currency mismatch', () => {
     expect(result.outcome).not.toBe('AUTO_MATCHED');
     if (result.candidates[0]) expect(result.candidates[0].signals.amount).toBe(0);
   });
+
+  test('currency comparison is case-insensitive', () => {
+    const result = matchDocument(doc({ currency: 'sar' }), [tx({ currency: 'SAR' })]);
+    expect(result.candidates[0].signals.amount).toBe(1);
+  });
 });
 
 describe('matchDocument — partial extraction', () => {
@@ -146,6 +152,62 @@ describe('matchDocument — partial extraction', () => {
     // Signals object should not contain cardLast4 when the doc didn't have one.
     expect('cardLast4' in result.candidates[0].signals).toBe(false);
   });
+
+  test('only amount + merchant is reviewable but cannot auto-match because evidence is sparse', () => {
+    const result = matchDocument(doc({ cardLast4: null, documentDate: null }), [tx()]);
+    expect(result.outcome).toBe('NEEDS_REVIEW');
+    expect(result.candidates[0].evidenceCoverage).toBeLessThan(MATCHER_CONFIG.thresholds.minAutoEvidenceCoverage);
+  });
+});
+
+describe('matchDocument — reliable contradictions and strong identifiers', () => {
+  test('a high-confidence card mismatch vetoes auto-match and is explained', () => {
+    const result = matchDocument(
+      doc({ cardLast4: '9999', fieldConfidences: { cardLast4: 0.99 } }),
+      [tx()],
+    );
+    expect(result.outcome).not.toBe('AUTO_MATCHED');
+    if (result.candidates[0]) expect(result.candidates[0].contradictions).toContain('card_last4_mismatch');
+  });
+
+  test('a low-confidence card OCR mismatch does not become a hard veto', () => {
+    const result = matchDocument(
+      doc({ cardLast4: '9999', fieldConfidences: { cardLast4: 0.2 } }),
+      [tx()],
+    );
+    expect(result.candidates[0].contradictions).toEqual([]);
+    expect(result.outcome).toBe('AUTO_MATCHED');
+  });
+
+  test('an exact VAT identifier strengthens an otherwise good candidate', () => {
+    const result = matchDocument(
+      doc({ vatNumber: '310123456700003' }),
+      [tx({ merchantVatNumber: '310123456700003' })],
+    );
+    expect(result.candidates[0].signals.vatNumber).toBe(1);
+    expect(result.candidates[0].confidence).toBeGreaterThanOrEqual(0.97);
+  });
+
+  test('invoice identifiers retain their alphabetic prefix', () => {
+    const candidate = scoreTransaction(
+      doc({ invoiceNumber: 'INV-42' }),
+      tx({ invoiceNumber: 'OTHER-42' }),
+    );
+    expect(candidate.signals.invoiceNumber).toBe(0);
+    expect(candidate.contradictions).toContain('invoiceNumber_mismatch');
+  });
+});
+
+describe('matchDocument — merchant context', () => {
+  test('city evidence ranks the correct branch above the same chain elsewhere', () => {
+    const result = matchDocument(doc({ merchantName: 'Alfanar Fuel Riyadh' }), [
+      tx({ id: 1, merchantName: 'ALFANAR FUEL ST 04 RUH' }),
+      tx({ id: 2, merchantName: 'ALFANAR FUEL ST 12 JED' }),
+    ]);
+    expect(result.candidates[0].transactionId).toBe(1);
+    expect(result.candidates[0].signals.merchantCity).toBe(1);
+    expect(result.candidates[1].signals.merchantCity).toBe(0);
+  });
 });
 
 describe('matchDocument — trimming', () => {
@@ -153,5 +215,19 @@ describe('matchDocument — trimming', () => {
     const candidates = Array.from({ length: 20 }, (_, i) => tx({ id: i + 1 }));
     const result = matchDocument(doc(), candidates);
     expect(result.candidates.length).toBeLessThanOrEqual(MATCHER_CONFIG.maxCandidates);
+  });
+
+  test('omits implausible alternatives below the display floor', () => {
+    const result = matchDocument(doc(), [
+      tx({ id: 1 }),
+      tx({ id: 2, merchantName: 'UNRELATED', amount: 999999, transactionAt: new Date('2020-01-01') }),
+    ]);
+    expect(result.candidates.map((candidate) => candidate.transactionId)).toEqual([1]);
+  });
+
+  test('ranking is deterministic regardless of input order', () => {
+    const candidates = [tx({ id: 2 }), tx({ id: 1 })];
+    expect(matchDocument(doc(), candidates).candidates.map((candidate) => candidate.transactionId))
+      .toEqual(matchDocument(doc(), [...candidates].reverse()).candidates.map((candidate) => candidate.transactionId));
   });
 });

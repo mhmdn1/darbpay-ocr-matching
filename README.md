@@ -78,7 +78,7 @@ Expected outcomes:
 npm test
 ```
 
-Six test files cover the required behavior and database invariants:
+Nine test files cover the required behavior, matching hardening, and database invariants:
 
 - `matcher.test.ts` — the six edge cases in the spec + cardLast4 mismatch, currency mismatch, partial extraction, one-confirmed rule, trimming.
 - `normalization.test.ts` — real-world messy merchant strings + all four signal scorers + phone normalization.
@@ -86,9 +86,22 @@ Six test files cover the required behavior and database invariants:
 - `ingestion.test.ts` — happy path, redelivery, extractor throw, garbage extraction, sender scoping (both directions), leak isolation between clients.
 - `rematch.test.ts` — document arriving before its transaction gets promoted after `rematchUnmatched`.
 - `review-service.test.ts` — decision transitions, replay safety, sibling rejection, and database uniqueness.
+- `global-assignment.test.ts` — optimal one-to-one batch assignment.
+- `matcher-evaluation.test.ts` — ranking, precision/coverage, calibration, and threshold selection.
+- `zatca-qr.test.ts` — Saudi e-invoice TLV QR decoding and OCR enrichment.
 
-Tests use a throwaway `test.db` cloned from `dev.db` at global-setup time.
-Run `npm run db:migrate` at least once first so the schema exists to clone.
+Tests build a throwaway `test.db` directly from committed SQL migrations, so
+they verify a clean installation and never touch developer data.
+
+To evaluate the matcher against human-confirmed review decisions:
+
+```bash
+npm run matcher:evaluate
+```
+
+The command reports top-1 accuracy, recall@1/3/5, auto-match precision and
+coverage, Brier score, expected calibration error, and a threshold candidate
+for 99.5% precision. It refuses to treat auto-confirmed rows as ground truth.
 
 ## Optional: HMAC-signed webhooks
 
@@ -118,6 +131,8 @@ lib/
   media/                          MediaStore interface + fixture-backed impl
   services/
     transaction-matcher.ts        pure scoring engine
+    global-assignment.ts          one-to-one batch optimizer
+    matcher-evaluation.ts         offline metrics + isotonic calibration
     document-ingestion.ts         webhook → document pipeline
     review-service.ts             confirm/reject transactional logic
     rematch-unmatched.ts          bonus: retry UNMATCHED docs on new tx
@@ -129,7 +144,7 @@ prisma/
 fixtures/
   documents/                      six sample document files
   webhook-payloads/               ready-to-fire JSON payloads + curl script + .http file
-__tests__/                        matcher, normalization, ingestion, signature, rematch
+__tests__/                        80+ unit and integration tests
 ```
 
 ## Handy scripts
@@ -138,6 +153,7 @@ __tests__/                        matcher, normalization, ingestion, signature, 
 npm run dev          # next dev
 npm run build        # production build (webpack for sandbox/CI portability)
 npm run test         # jest
+npm run matcher:evaluate # evaluate human-labelled matcher outcomes
 npm run db:generate  # prisma generate
 npm run db:migrate   # prisma migrate deploy (creates dev.db)
 npm run db:push      # prototype-only schema sync; migrations are preferred
