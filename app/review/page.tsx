@@ -3,12 +3,20 @@ import Image from 'next/image';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { format } from 'date-fns';
-import { AlertCircle, ArrowUpRight, CheckCircle2, ChevronDown, CircleHelp, Clock3, FileSearch, Inbox, Mail, MessageCircle, ReceiptText, ShieldCheck } from 'lucide-react';
+import { AlertCircle, ArrowUpRight, CheckCircle2, ChevronDown, CircleHelp, Clock3, FileSearch, Inbox, Mail, MessageCircle, ReceiptText, ShieldCheck, XCircle } from 'lucide-react';
 import { DecisionButtons } from './decision-buttons';
 import { MATCHER_CONFIG } from '@/lib/services/transaction-matcher';
 import { CandidateExplanation } from './candidate-explanation';
 import { explainDocumentStatus } from '@/lib/services/document-status-reason';
 import { MatchStatus } from '@/lib/generated/prisma/enums';
+import {
+  loadReviewDecisionHistory,
+  type ReviewDecisionHistoryRow,
+} from '@/lib/services/review-history';
+import {
+  REJECTION_REASON_LABELS,
+  type RejectionReason,
+} from '@/lib/domain/review-reasons';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,6 +60,7 @@ interface DocRow {
   authorizationCode: string | null;
   extractionConfidence: number | null;
   receivedAt: Date;
+  updatedAt: Date;
   errorMessage: string | null;
   reviewReason: string | null;
   statusReason: string | null;
@@ -102,6 +111,7 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
     authorizationCode: d.authorizationCode,
     extractionConfidence: d.extractionConfidence,
     receivedAt: d.receivedAt,
+    updatedAt: d.updatedAt,
     errorMessage: d.errorMessage,
     reviewReason: d.reviewReason,
     statusReason: d.statusReason,
@@ -164,15 +174,32 @@ function reviewPriority(document: DocRow): number {
 }
 
 export default async function ReviewPage() {
-  const [needsReview, matched, unmatched, failed] = await Promise.all([
+  const [needsReview, matched, unmatched, failed, decisionHistory] = await Promise.all([
     loadDocuments('NEEDS_REVIEW'),
     loadDocuments('MATCHED'),
     loadDocuments('UNMATCHED'),
     loadDocuments('FAILED'),
+    loadReviewDecisionHistory(),
   ]);
 
   const total = needsReview.length + matched.length + unmatched.length + failed.length;
   const matchedRate = total === 0 ? 0 : Math.round((matched.length / total) * 100);
+  const reviewedDocumentIds = new Set(decisionHistory.map((event) => event.documentId));
+  const lifecycleHistory = [...matched, ...unmatched, ...failed]
+    .filter((document) => !reviewedDocumentIds.has(document.id))
+    .map((document) => ({
+      key: `document-${document.id}`,
+      occurredAt: document.updatedAt,
+      document,
+    }));
+  const historyRows = [
+    ...decisionHistory.map((event) => ({
+      key: `decision-${event.eventId}`,
+      occurredAt: event.occurredAt,
+      event,
+    })),
+    ...lifecycleHistory,
+  ].sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
 
   return (
     <div className="min-h-screen bg-[#f5f7fb] text-slate-950">
@@ -234,7 +261,7 @@ export default async function ReviewPage() {
         <section id="history" aria-labelledby="other-heading" className="scroll-mt-6 space-y-4 pb-10">
           <div>
             <h2 id="other-heading" className="text-xl font-semibold">Processing history</h2>
-            <p className="mt-1 text-sm text-slate-500">Recently processed documents across every terminal state.</p>
+            <p className="mt-1 text-sm text-slate-500">Reviewer decisions appear immediately; automatic and terminal outcomes are included too.</p>
           </div>
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-200/40">
           <Table>
@@ -245,23 +272,33 @@ export default async function ReviewPage() {
                 <TableHead>Source</TableHead>
                 <TableHead>Merchant</TableHead>
                 <TableHead>Amount</TableHead>
-                <TableHead>Received</TableHead>
+                <TableHead>Activity</TableHead>
                 <TableHead className="pr-5">Outcome</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {[...matched, ...unmatched, ...failed].map((d) => (
-                <TableRow key={d.id}>
-                  <TableCell className="pl-5 font-medium">#{d.id}</TableCell>
-                  <TableCell><StatusBadge status={d.status} /></TableCell>
-                  <TableCell><SourceLabel source={d.source} /></TableCell>
-                  <TableCell>{d.merchantName ?? '—'}</TableCell>
-                  <TableCell className="font-medium">{formatMoney(d.totalAmount, d.currency)}</TableCell>
-                  <TableCell className="text-xs text-slate-500">{format(d.receivedAt, 'MMM d, yyyy · HH:mm')}</TableCell>
-                  <TableCell className="whitespace-normal pr-5"><OutcomeDetails doc={d} /></TableCell>
+              {historyRows.map((row) => 'event' in row ? (
+                <TableRow key={row.key}>
+                  <TableCell className="pl-5 font-medium">#{row.event.documentId}</TableCell>
+                  <TableCell><StatusBadge status={row.event.action === 'CONFIRM' ? 'MATCHED' : 'REJECTED'} /></TableCell>
+                  <TableCell><SourceLabel source={row.event.source} /></TableCell>
+                  <TableCell>{row.event.documentMerchantName ?? '—'}</TableCell>
+                  <TableCell className="font-medium">{formatMoney(row.event.documentTotalAmount, row.event.documentCurrency)}</TableCell>
+                  <TableCell className="text-xs text-slate-500">{format(row.occurredAt, 'MMM d, yyyy · HH:mm')}</TableCell>
+                  <TableCell className="whitespace-normal pr-5"><DecisionOutcomeDetails event={row.event} /></TableCell>
+                </TableRow>
+              ) : (
+                <TableRow key={row.key}>
+                  <TableCell className="pl-5 font-medium">#{row.document.id}</TableCell>
+                  <TableCell><StatusBadge status={row.document.status} /></TableCell>
+                  <TableCell><SourceLabel source={row.document.source} /></TableCell>
+                  <TableCell>{row.document.merchantName ?? '—'}</TableCell>
+                  <TableCell className="font-medium">{formatMoney(row.document.totalAmount, row.document.currency)}</TableCell>
+                  <TableCell className="text-xs text-slate-500">{format(row.occurredAt, 'MMM d, yyyy · HH:mm')}</TableCell>
+                  <TableCell className="whitespace-normal pr-5"><OutcomeDetails doc={row.document} /></TableCell>
                 </TableRow>
               ))}
-              {matched.length + unmatched.length + failed.length === 0 && (
+              {historyRows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="py-10 text-center text-sm text-slate-500">
                     Nothing here yet — fire a webhook to ingest a document.
@@ -275,6 +312,50 @@ export default async function ReviewPage() {
       </main>
     </div>
   );
+}
+
+function DecisionOutcomeDetails({ event }: { event: ReviewDecisionHistoryRow }) {
+  const matched = event.action === 'CONFIRM';
+  const reasonLabel = rejectionReasonLabel(event.reason);
+  return (
+    <details className="group min-w-[260px] max-w-sm">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:border-[#b9c9ff] hover:bg-[#f7f9ff]">
+        <span className="inline-flex items-center gap-2">
+          {matched
+            ? <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />
+            : <XCircle className="size-3.5 shrink-0 text-rose-600" />}
+          {matched ? 'Candidate matched' : 'Candidate rejected'}
+        </span>
+        <ChevronDown className="size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600 shadow-sm">
+        <p>{matched
+          ? 'A reviewer confirmed this exact document-to-transaction relationship.'
+          : `A reviewer rejected this candidate: ${reasonLabel}.`}</p>
+        {event.transaction ? (
+          <div className="rounded-md bg-[#f5f7ff] p-2 text-slate-700">
+            <p className="font-semibold">Transaction #{event.transaction.id} · {event.transaction.merchantName}</p>
+            <p>{formatMoney(event.transaction.amount, event.transaction.currency)} · card •••• {event.transaction.cardLast4}</p>
+            {event.transaction.decisionConfidence != null && (
+              <p>Decision confidence at review: {Math.round(event.transaction.decisionConfidence * 100)}%</p>
+            )}
+          </div>
+        ) : (
+          <p className="rounded-md bg-amber-50 p-2 text-amber-700">Transaction snapshot unavailable for this older event.</p>
+        )}
+        <p>Decision by: {event.decidedBy}</p>
+        <p className="font-mono text-[10px] uppercase tracking-wide text-slate-400">
+          Reason code: {event.reason} · matcher: {event.matcherVersion}
+        </p>
+      </div>
+    </details>
+  );
+}
+
+function rejectionReasonLabel(reason: string): string {
+  return reason in REJECTION_REASON_LABELS
+    ? REJECTION_REASON_LABELS[reason as RejectionReason]
+    : reason.toLowerCase().replaceAll('_', ' ');
 }
 
 function OutcomeDetails({ doc }: { doc: DocRow }) {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useTransition, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Check, LoaderCircle, X } from 'lucide-react';
 import { confirmMatch, rejectMatch } from '@/lib/actions/review';
@@ -11,6 +12,7 @@ import {
 } from '@/lib/domain/review-reasons';
 
 export function DecisionButtons({ matchId }: { matchId: number }) {
+  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [showRejectReason, setShowRejectReason] = useState(false);
@@ -20,7 +22,11 @@ export function DecisionButtons({ matchId }: { matchId: number }) {
     setError(null);
     startTransition(async () => {
       const result = await confirmMatch({ matchId });
-      if (result?.serverError) setError(String(result.serverError));
+      if (result?.serverError) {
+        setError(String(result.serverError));
+        return;
+      }
+      router.refresh();
     });
   };
 
@@ -33,6 +39,7 @@ export function DecisionButtons({ matchId }: { matchId: number }) {
         return;
       }
       setShowRejectReason(false);
+      router.refresh();
     });
   };
 
