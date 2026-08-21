@@ -82,6 +82,10 @@ transactions) so the matcher can be unit-tested with hand-built inputs.
 When a signal is missing on the document side (e.g. no card printed), we
 **re-normalize** — the confidence is `sum(available_score × weight) / sum(available_weight)`.
 That way a receipt with amount + merchant + date can still rank strongly.
+The UI calls this value **similarity**. A separate conservative decision
+confidence is `similarity × sqrt(evidence coverage)` and drives ranking and
+thresholds, so matching every available field cannot be displayed as certainty
+when most expected evidence is absent.
 Automation additionally requires at least 70% weighted evidence coverage,
 three available core signals, no reliable contradiction, and a 0.12 lead.
 This prevents a perfect score over two sparse fields from looking certain.
@@ -226,9 +230,12 @@ persistence.
   - WhatsApp: `Transaction.driverPhone = normalizedSender`
   - Email: sender → `ClientEmail.email` → `Client.id` → transactions
 - **Candidate blocking**: after tenant scoping, a valid document date limits
-  candidates to ±30 days. Rarity counts are computed only inside that safe
-  block. When the printed date is absent, `receivedAt` is a weak 0.25-reliability
-  ranking signal and cannot support auto-confirmation.
+  candidates through a union of exact-identifier, card/date, amount/date,
+  learned-merchant-alias, and bounded fallback blocks. Exact authorization,
+  invoice, or VAT identifiers may recover an older transaction outside the
+  normal window. When the printed date is absent, `receivedAt` supplies the
+  bounded window but remains a weak 0.25-reliability ranking signal and cannot
+  support auto-confirmation.
 - **Persistence**: for AUTO_MATCHED we persist a single AUTO_CONFIRMED
   DocumentMatch. For NEEDS_REVIEW we persist all ranked candidates as
   CANDIDATE. All wrapped in `prisma.$transaction` so the doc status and
@@ -255,6 +262,11 @@ persistence.
   remaining candidates → UNMATCHED. Both transitions persist a stable reason;
   an unmatched record can therefore distinguish weak scoring from explicit
   human rejection.
+- **Immutable labels and learned aliases**: every successful human transition
+  appends a `ReviewDecisionEvent` containing matcher version plus document and
+  candidate snapshots. Rejects store a structured reason. Confirmation also
+  upserts a tenant-scoped `MerchantAlias`, allowing bank and receipt descriptors
+  to become comparable without global or cross-client learning.
 - **On-demand candidate explanations**: no explanation is generated during
   ingestion, scoring, or page rendering. The reviewer must click **Explain
   match**. The server re-reads the trusted match row, sends only sanitized

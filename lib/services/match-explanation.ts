@@ -5,7 +5,7 @@ import type { Prisma } from '@/lib/generated/prisma/client';
 import { log } from '@/lib/logger';
 import { MATCHER_CONFIG } from '@/lib/services/transaction-matcher';
 
-export const EXPLANATION_PROMPT_VERSION = 'match-explanation-v1';
+export const EXPLANATION_PROMPT_VERSION = 'match-explanation-v2';
 
 const CORE_SIGNALS = ['amount', 'date', 'merchant', 'cardLast4'] as const;
 
@@ -30,7 +30,8 @@ export interface ExplanationSignal {
  * name, or transaction identifier. The model only explains matcher evidence.
  */
 export interface MatchExplanationInput {
-  confidence: number;
+  similarity: number;
+  decisionConfidence: number;
   rank: number;
   candidateCount: number;
   topScoreGap: number | null;
@@ -137,7 +138,7 @@ export async function explainMatchOnDemand(
         include: {
           matches: {
             where: { status: 'CANDIDATE' },
-            orderBy: [{ confidence: 'desc' }, { rank: 'asc' }, { id: 'asc' }],
+            orderBy: [{ decisionConfidence: 'desc' }, { rank: 'asc' }, { id: 'asc' }],
           },
         },
       },
@@ -216,27 +217,28 @@ type LoadedMatch = Prisma.DocumentMatchGetPayload<{
 function buildExplanationInput(match: LoadedMatch): MatchExplanationInput {
   const siblings = [...match.document.matches]
     .filter((candidate) => candidate.status === 'CANDIDATE')
-    .sort((a, b) => b.confidence - a.confidence || (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id);
+    .sort((a, b) => b.decisionConfidence - a.decisionConfidence || (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id);
   const position = siblings.findIndex((candidate) => candidate.id === match.id);
-  const topGap = siblings.length > 1 ? siblings[0].confidence - siblings[1].confidence : null;
+  const topGap = siblings.length > 1 ? siblings[0].decisionConfidence - siblings[1].decisionConfidence : null;
   const signals = parseSignals(match.signals);
   const contradictions = parseStringArray(match.contradictions);
   const availableCoreSignals = CORE_SIGNALS.filter((name) => name in signals).length;
   const triggers: ReviewTrigger[] = [];
 
   if (match.transaction.documents.length > 0) triggers.push('TRANSACTION_ALREADY_CONFIRMED');
-  const tiedForTop = position >= 0 && siblings[0]?.confidence === match.confidence;
+  const tiedForTop = position >= 0 && siblings[0]?.decisionConfidence === match.decisionConfidence;
   if (tiedForTop && topGap != null && topGap < MATCHER_CONFIG.thresholds.autoMatchGap) triggers.push('TOP_CANDIDATES_TOO_CLOSE');
   if (!match.document.documentDate || signals.dateFallback === 1) triggers.push('RECEIVED_DATE_FALLBACK');
   if (match.evidenceCoverage < MATCHER_CONFIG.thresholds.minAutoEvidenceCoverage) triggers.push('LOW_EVIDENCE');
   if (availableCoreSignals < MATCHER_CONFIG.thresholds.minAutoSignals) triggers.push('TOO_FEW_SIGNALS');
   if (contradictions.length > 0) triggers.push('CONTRADICTION');
-  if (match.confidence < MATCHER_CONFIG.thresholds.autoMatch) triggers.push('BELOW_AUTO_THRESHOLD');
+  if (match.decisionConfidence < MATCHER_CONFIG.thresholds.autoMatch) triggers.push('BELOW_AUTO_THRESHOLD');
   if (position > 0) triggers.push('LOWER_RANKED');
   if (match.document.reviewReason === 'AUTO_MATCH_AUDIT') triggers.push('AUDIT_SAMPLE');
 
   return {
-    confidence: round3(match.confidence),
+    similarity: round3(match.confidence),
+    decisionConfidence: round3(match.decisionConfidence),
     rank: position >= 0 ? position + 1 : match.rank ?? 1,
     candidateCount: siblings.length,
     topScoreGap: topGap == null ? null : round3(topGap),
@@ -254,7 +256,7 @@ export function generateLocalExplanation(input: MatchExplanationInput): string {
   const disagreements = input.signals.filter((signal) => signal.score <= 0.2 && signal.name !== 'dateFallback');
   const evidence = agreements.length > 0
     ? `${formatList(agreements.slice(0, 4).map((signal) => signalLabel(signal.name)))} ${agreements.length === 1 ? 'supports' : 'support'} this candidate`
-    : `This candidate has a ${Math.round(input.confidence * 100)}% heuristic score`;
+    : `This candidate has ${Math.round(input.similarity * 100)}% similarity and ${Math.round(input.decisionConfidence * 100)}% decision confidence`;
 
   if (input.reviewTriggers.includes('TRANSACTION_ALREADY_CONFIRMED')) {
     return `${capitalize(evidence)}. Review is required because this transaction already has a confirmed document.`;
@@ -272,13 +274,13 @@ export function generateLocalExplanation(input: MatchExplanationInput): string {
     const mismatch = disagreements.length > 0
       ? `; ${formatList(disagreements.slice(0, 3).map((signal) => signalLabel(signal.name)))} do not align`
       : '';
-    return `This is candidate ${input.rank} of ${input.candidateCount} with a ${Math.round(input.confidence * 100)}% heuristic score${mismatch}. Compare it with the higher-ranked option before matching.`;
+    return `This is candidate ${input.rank} of ${input.candidateCount} with ${Math.round(input.decisionConfidence * 100)}% decision confidence${mismatch}. Compare it with the higher-ranked option before matching.`;
   }
   if (input.reviewTriggers.includes('LOW_EVIDENCE') || input.reviewTriggers.includes('TOO_FEW_SIGNALS')) {
     return `${capitalize(evidence)}, but only ${Math.round(input.evidenceCoverage * 100)}% of the expected evidence is available. More receipt detail is needed before matching.`;
   }
   if (input.reviewTriggers.includes('BELOW_AUTO_THRESHOLD')) {
-    return `${capitalize(evidence)}, but the ${Math.round(input.confidence * 100)}% heuristic score is below the automatic-match threshold. A reviewer must confirm or reject it.`;
+    return `${capitalize(evidence)}, but the ${Math.round(input.decisionConfidence * 100)}% decision confidence is below the automatic-match threshold. A reviewer must confirm or reject it.`;
   }
   if (input.reviewTriggers.includes('AUDIT_SAMPLE')) {
     return `${capitalize(evidence)}. This strong candidate was intentionally sampled for a human quality audit.`;

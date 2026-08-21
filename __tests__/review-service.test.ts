@@ -20,6 +20,9 @@ async function createReviewDocument(transactionIds: number[]) {
       contentHash: `hash-${suffix}`,
       senderIdentifier: 'fleet@alrashed.example',
       status: 'NEEDS_REVIEW',
+      merchantName: 'Receipt Merchant Alias',
+      totalAmount: 10000,
+      currency: 'SAR',
     },
   });
 
@@ -30,7 +33,10 @@ async function createReviewDocument(transactionIds: number[]) {
         documentId: document.id,
         transactionId,
         confidence: 0.9 - index * 0.1,
+        decisionConfidence: 0.82 - index * 0.1,
+        evidenceCoverage: 0.8,
         signals: JSON.stringify({ amount: 1, date: 0.8 }),
+        rank: index + 1,
       },
     }));
   }
@@ -54,6 +60,24 @@ describe('confirmMatchTx', () => {
     });
     expect(stored[0]).toMatchObject({ status: 'CONFIRMED', decidedBy: 'reviewer@example.com' });
     expect(stored[1]).toMatchObject({ status: 'REJECTED', decidedBy: 'system' });
+
+    const events = await prisma.reviewDecisionEvent.findMany({ where: { documentId: document.id } });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      action: 'CONFIRM', reason: 'REVIEWER_SELECTED', transactionId: transactions[0].id,
+      matcherVersion: 'heuristic-v2',
+    });
+    expect(JSON.parse(events[0].candidateSnapshot)).toHaveLength(2);
+    expect(JSON.parse(events[0].documentSnapshot)).toMatchObject({ merchantName: 'Receipt Merchant Alias' });
+
+    const learnedAlias = await prisma.merchantAlias.findFirstOrThrow({
+      where: { clientId: transactions[0].clientId },
+    });
+    expect(learnedAlias).toMatchObject({
+      alias: 'Receipt Merchant Alias',
+      canonicalMerchantName: transactions[0].merchantName,
+      confirmationCount: 1,
+    });
   });
 
   test('refuses a second confirmed document for the same transaction', async () => {
@@ -87,7 +111,7 @@ describe('rejectMatchTx', () => {
     const transactions = await prisma.transaction.findMany({ take: 2, orderBy: { id: 'asc' } });
     const { document, matches } = await createReviewDocument(transactions.map((tx) => tx.id));
 
-    const first = await rejectMatchTx(matches[0].id, 'reviewer@example.com');
+    const first = await rejectMatchTx(matches[0].id, 'reviewer@example.com', 'WRONG_AMOUNT');
     expect(first.documentStatus).toBe('NEEDS_REVIEW');
 
     const actionableAfterFirstReject = await prisma.documentMatch.findMany({
@@ -95,13 +119,22 @@ describe('rejectMatchTx', () => {
     });
     expect(actionableAfterFirstReject.map((match) => match.id)).toEqual([matches[1].id]);
 
-    const last = await rejectMatchTx(matches[1].id, 'reviewer@example.com');
-    const replay = await rejectMatchTx(matches[1].id, 'reviewer@example.com');
+    const last = await rejectMatchTx(matches[1].id, 'reviewer@example.com', 'WRONG_MERCHANT');
+    const replay = await rejectMatchTx(matches[1].id, 'reviewer@example.com', 'WRONG_MERCHANT');
     expect(last.documentStatus).toBe('UNMATCHED');
     expect(replay.matchStatus).toBe('REJECTED');
 
     const stored = await prisma.document.findUniqueOrThrow({ where: { id: document.id } });
     expect(stored.status).toBe('UNMATCHED');
+
+    const events = await prisma.reviewDecisionEvent.findMany({
+      where: { documentId: document.id },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(events.map((event) => [event.action, event.reason])).toEqual([
+      ['REJECT', 'WRONG_AMOUNT'],
+      ['REJECT', 'WRONG_MERCHANT'],
+    ]);
   });
 
   test('cannot reject an already-confirmed match', async () => {

@@ -846,12 +846,12 @@
           <div class="weight-row"><strong>Date</strong><div class="weight-track"><div class="weight-fill" style="width:66.67%"></div></div><span class="weight-value">20%</span></div>
           <div class="callout">
             <span class="callout-icon">i</span>
-            <div><strong>Confidence is a heuristic ranking score</strong><p>It is deliberately not presented as a statistically calibrated probability until enough human-labelled production data exists.</p></div>
+            <div><strong>Three values, three meanings</strong><p>Similarity measures available-field agreement. Evidence coverage measures how much was present. Decision confidence discounts similarity by missing evidence and drives the safety thresholds; it is still not a calibrated probability.</p></div>
           </div>
         </article>
         <article class="panel">
           <h3>Every auto-match gate must pass</h3>
-          <p class="panel-intro">Failing one gate sends the document to review, even when the displayed score is 100%.</p>
+          <p class="panel-intro">Failing one gate sends the document to review, even when available-field similarity is 100%.</p>
           <div class="gate-list">
             <div class="gate"><span class="gate-check">✓</span><div><strong>Top score ≥ 82%</strong><span>Strong absolute candidate</span></div></div>
             <div class="gate"><span class="gate-check">✓</span><div><strong>Lead ≥ 12%</strong><span>Not tied with runner-up</span></div></div>
@@ -975,8 +975,8 @@
           <div class="file-list">
             <div class="file-row" data-search="app layout metadata root html css"><code>app/layout.tsx</code><p><strong>Purpose:</strong> Root page shell and metadata.</p><p><strong>How:</strong> Wraps every route in the shared html/body structure and imports global CSS.</p></div>
             <div class="file-row" data-search="app page redirect review"><code>app/page.tsx</code><p><strong>Purpose:</strong> Home entry point.</p><p><strong>How:</strong> Calls Next.js redirect('/review') immediately.</p></div>
-            <div class="file-row" data-search="review page dashboard prisma candidates comparison"><code>app/review/page.tsx</code><p><strong>Purpose:</strong> Finance review dashboard.</p><p><strong>How:</strong> Queries four document states in parallel, ranks review priority, parses evidence, and renders receipt-versus-transaction comparisons.</p></div>
-            <div class="file-row" data-search="decision buttons match reject client action loading"><code>app/review/decision-buttons.tsx</code><p><strong>Purpose:</strong> Match and Reject controls.</p><p><strong>How:</strong> Uses useTransition(), calls server actions, disables during work, and renders domain errors.</p></div>
+            <div class="file-row" data-search="review page dashboard prisma candidates comparison"><code>app/review/page.tsx</code><p><strong>Purpose:</strong> Finance review dashboard.</p><p><strong>How:</strong> Renders receipt-versus-transaction comparisons with separate similarity, evidence coverage, and decision-confidence values.</p></div>
+            <div class="file-row" data-search="decision buttons match reject reason label client action"><code>app/review/decision-buttons.tsx</code><p><strong>Purpose:</strong> Match and reason-coded Reject controls.</p><p><strong>How:</strong> Captures a structured rejection reason, calls validated server actions, and renders pending/domain errors.</p></div>
             <div class="file-row" data-search="candidate explanation openai local click cache client"><code>app/review/candidate-explanation.tsx</code><p><strong>Purpose:</strong> On-demand explanation UI.</p><p><strong>How:</strong> Calls explainMatch only after a click and stores the returned text/provider in React state.</p></div>
             <div class="file-row" data-search="email webhook route zod base64 attachments hmac"><code>app/api/webhooks/email/route.ts</code><p><strong>Purpose:</strong> Email ingestion boundary.</p><p><strong>How:</strong> Verifies raw body, validates JSON, decodes each Base64 attachment, and isolates per-file failures.</p></div>
             <div class="file-row" data-search="whatsapp webhook meta route media messages hmac"><code>app/api/webhooks/whatsapp/route.ts</code><p><strong>Purpose:</strong> WhatsApp ingestion boundary.</p><p><strong>How:</strong> Validates nested Meta messages, loads fixture media IDs, normalizes phones, and ingests each image independently.</p></div>
@@ -987,9 +987,9 @@
         <details class="file-group" data-category="domain" open>
           <summary><span>Domain services</span><span class="file-count">8 files</span></summary>
           <div class="file-list">
-            <div class="file-row" data-search="document ingestion pipeline dedupe candidates persist"><code>lib/services/document-ingestion.ts</code><p><strong>Purpose:</strong> End-to-end orchestration.</p><p><strong>How:</strong> Resolves owner, deduplicates, extracts, gates quality, scopes candidates, calls matcher, and persists one outcome.</p></div>
+            <div class="file-row" data-search="document ingestion pipeline dedupe candidates persist"><code>lib/services/document-ingestion.ts</code><p><strong>Purpose:</strong> End-to-end orchestration.</p><p><strong>How:</strong> Unions exact-ID, card/date, amount/date, learned-alias, and bounded fallback candidate blocks before scoring.</p></div>
             <div class="file-row" data-search="transaction matcher weights amount date merchant card scoring"><code>lib/services/transaction-matcher.ts</code><p><strong>Purpose:</strong> Pure matching engine.</p><p><strong>How:</strong> Scores available evidence, applies OCR reliability and contradictions, ranks candidates, then checks automation gates.</p></div>
-            <div class="file-row" data-search="review service confirm reject race transaction"><code>lib/services/review-service.ts</code><p><strong>Purpose:</strong> Final human decisions.</p><p><strong>How:</strong> Uses transactional conditional updates, rejects siblings, changes document state, and enforces one proof per transaction.</p></div>
+            <div class="file-row" data-search="review service confirm reject feedback alias label snapshot"><code>lib/services/review-service.ts</code><p><strong>Purpose:</strong> Final human decisions and feedback.</p><p><strong>How:</strong> Atomically changes state, appends immutable labelled snapshots, and learns tenant-scoped merchant aliases from confirmations.</p></div>
             <div class="file-row" data-search="match explanation openai llm local cache privacy"><code>lib/services/match-explanation.ts</code><p><strong>Purpose:</strong> Reviewer-friendly prose.</p><p><strong>How:</strong> Derives privacy-safe triggers, hashes evidence, calls OpenAI or local fallback, validates text, and caches the result.</p></div>
             <div class="file-row" data-search="rematch unmatched late transaction global assignment"><code>lib/services/rematch-unmatched.ts</code><p><strong>Purpose:</strong> Handle documents arriving first.</p><p><strong>How:</strong> Rebuilds candidates for UNMATCHED rows, scores them, globally assigns transactions, and promotes results.</p></div>
             <div class="file-row" data-search="global assignment hungarian one to one"><code>lib/services/global-assignment.ts</code><p><strong>Purpose:</strong> One-to-one batch allocation.</p><p><strong>How:</strong> Builds a score matrix with dummy columns and runs a maximum-weight Hungarian algorithm.</p></div>

@@ -236,7 +236,7 @@ describe('50-case matcher edge matrix — outcomes and ranking (43–50)', () =>
 
   test('45 a displayed candidate below the 55% review floor still returns unmatched', () => {
     const result = matchDocument(
-      document({ merchantName: null, totalAmount: null, cardLast4: null, documentDate: '2025-06-22T08:15:00Z' }),
+      document({ merchantName: null, totalAmount: null, cardLast4: null, documentDate: '2025-06-14T08:15:00Z' }),
       [transaction()],
     );
     expect(result).toEqual(expect.objectContaining({

@@ -5,8 +5,10 @@ import { z } from 'zod';
 import { actionClient } from '@/lib/actions/safe-action-client';
 import { confirmMatchTx, rejectMatchTx } from '@/lib/services/review-service';
 import { explainMatchOnDemand } from '@/lib/services/match-explanation';
+import { REJECTION_REASONS } from '@/lib/domain/review-reasons';
 
 const matchIdSchema = z.object({ matchId: z.number().int().positive() });
+const rejectMatchSchema = matchIdSchema.extend({ reason: z.enum(REJECTION_REASONS) });
 
 /**
  * Confirm a candidate match.
@@ -29,9 +31,9 @@ export const confirmMatch = actionClient
  * - If the document has no remaining CANDIDATE matches, its status flips to UNMATCHED.
  */
 export const rejectMatch = actionClient
-  .inputSchema(matchIdSchema)
+  .inputSchema(rejectMatchSchema)
   .action(async ({ parsedInput }) => {
-    const result = await rejectMatchTx(parsedInput.matchId, 'reviewer');
+    const result = await rejectMatchTx(parsedInput.matchId, 'reviewer', parsedInput.reason);
     revalidatePath('/review');
     return result;
   });

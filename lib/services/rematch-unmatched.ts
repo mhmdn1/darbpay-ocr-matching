@@ -1,14 +1,13 @@
 import prisma from '@/lib/prisma';
 import type { PrismaClient } from '@/lib/generated/prisma/client';
-import { MatchStatus } from '@/lib/generated/prisma/enums';
 import {
+  MATCHER_VERSION,
   matchDocument,
-  type CandidateTransaction,
   type MatchResult,
 } from '@/lib/services/transaction-matcher';
 import { log } from '@/lib/logger';
 import { assignGlobally } from '@/lib/services/global-assignment';
-import { addCandidateFrequencies, candidateDateWindow } from '@/lib/services/document-ingestion';
+import { loadCandidates } from '@/lib/services/document-ingestion';
 import { serializeStatusDetails, STATUS_REASON } from '@/lib/services/document-status-reason';
 
 export interface RematchScope {
@@ -55,9 +54,20 @@ export async function rematchUnmatched(
 
   const plans: Array<{ documentId: number; result: MatchResult }> = [];
   for (const doc of docs) {
-    const candidates = await loadCandidatesForDocument(
-      db, doc.source, doc.senderIdentifier, doc.documentDate?.toISOString() ?? null,
-    );
+    const candidates = await loadCandidates(db, doc.source, doc.senderIdentifier, {
+      documentType: (doc.documentType as 'RECEIPT' | 'TAX_INVOICE' | 'UNKNOWN') ?? 'UNKNOWN',
+      merchantName: doc.merchantName,
+      vatNumber: doc.vatNumber,
+      totalAmount: doc.totalAmount,
+      currency: doc.currency,
+      documentDate: doc.documentDate?.toISOString() ?? null,
+      cardLast4: doc.cardLast4,
+      invoiceNumber: doc.invoiceNumber,
+      authorizationCode: doc.authorizationCode,
+      fieldConfidences: parseFieldConfidences(doc.fieldConfidences),
+      rawText: doc.rawText ?? '',
+      extractionConfidence: doc.extractionConfidence ?? 0,
+    }, doc.receivedAt);
     if (candidates.length === 0) {
       plans.push({ documentId: doc.id, result: { outcome: 'UNMATCHED', candidates: [] } });
       continue;
@@ -92,7 +102,7 @@ export async function rematchUnmatched(
     plan.result.candidates.map((candidate) => ({
       documentId: plan.documentId,
       transactionId: candidate.transactionId,
-      score: candidate.confidence,
+      score: candidate.decisionConfidence,
     })),
   ));
   const assignedTransaction = new Map(assignments.map((assignment) => [assignment.documentId, assignment.transactionId]));
@@ -133,10 +143,12 @@ export async function rematchUnmatched(
             documentId: plan.documentId,
             transactionId: result.candidates[0].transactionId,
             confidence: result.candidates[0].confidence,
+            decisionConfidence: result.candidates[0].decisionConfidence,
             signals: JSON.stringify(result.candidates[0].signals),
             evidenceCoverage: result.candidates[0].evidenceCoverage,
             contradictions: JSON.stringify(result.candidates[0].contradictions),
             rank: 1,
+            matcherVersion: MATCHER_VERSION,
             status: 'AUTO_CONFIRMED',
             decidedBy: 'system-rematch',
             decidedAt: new Date(),
@@ -157,10 +169,12 @@ export async function rematchUnmatched(
               documentId: plan.documentId,
               transactionId: c.transactionId,
               confidence: c.confidence,
+              decisionConfidence: c.decisionConfidence,
               signals: JSON.stringify(c.signals),
               evidenceCoverage: c.evidenceCoverage,
               contradictions: JSON.stringify(c.contradictions),
               rank: index + 1,
+              matcherVersion: MATCHER_VERSION,
               status: 'CANDIDATE',
             },
           });
@@ -174,7 +188,7 @@ export async function rematchUnmatched(
             statusDetails: serializeStatusDetails({
               scopedCandidateCount: result.candidates.length,
               displayedCandidateCount: result.candidates.length,
-              topScore: result.candidates[0]?.confidence ?? null,
+              topScore: result.candidates[0]?.decisionConfidence ?? null,
             }),
           },
         });
@@ -190,61 +204,6 @@ export async function rematchUnmatched(
   }
 
   return results;
-}
-
-async function loadCandidatesForDocument(
-  db: PrismaClient,
-  source: string,
-  senderIdentifier: string,
-  documentDate: string | null,
-): Promise<CandidateTransaction[]> {
-  const dateWindow = candidateDateWindow(documentDate);
-  const confirmedStatuses: MatchStatus[] = [MatchStatus.CONFIRMED, MatchStatus.AUTO_CONFIRMED];
-  const includeConfirmed = {
-    documents: { where: { status: { in: confirmedStatuses } }, select: { id: true } },
-  };
-
-  if (source === 'WHATSAPP') {
-    const txs = await db.transaction.findMany({
-      where: { driverPhone: senderIdentifier, ...(dateWindow ? { transactionAt: dateWindow } : {}) },
-      include: includeConfirmed,
-    });
-    return addCandidateFrequencies(txs.map((tx) => ({
-      id: tx.id,
-      cardLast4: tx.cardLast4,
-      merchantName: tx.merchantName,
-      amount: tx.amount,
-      currency: tx.currency,
-      transactionAt: tx.transactionAt,
-      hasConfirmedDocument: tx.documents.length > 0,
-      merchantVatNumber: tx.merchantVatNumber,
-      invoiceNumber: tx.invoiceNumber,
-      authorizationCode: tx.authorizationCode,
-      merchantCategory: tx.merchantCategory,
-      merchantCity: tx.merchantCity,
-    })));
-  }
-
-  const senderRow = await db.clientEmail.findUnique({ where: { email: senderIdentifier.toLowerCase() } });
-  if (!senderRow) return [];
-  const txs = await db.transaction.findMany({
-    where: { clientId: senderRow.clientId, ...(dateWindow ? { transactionAt: dateWindow } : {}) },
-    include: includeConfirmed,
-  });
-  return addCandidateFrequencies(txs.map((tx) => ({
-    id: tx.id,
-    cardLast4: tx.cardLast4,
-    merchantName: tx.merchantName,
-    amount: tx.amount,
-    currency: tx.currency,
-    transactionAt: tx.transactionAt,
-    hasConfirmedDocument: tx.documents.length > 0,
-    merchantVatNumber: tx.merchantVatNumber,
-    invoiceNumber: tx.invoiceNumber,
-    authorizationCode: tx.authorizationCode,
-    merchantCategory: tx.merchantCategory,
-    merchantCity: tx.merchantCity,
-  })));
 }
 
 function parseFieldConfidences(value: string | null): Record<string, number> | undefined {

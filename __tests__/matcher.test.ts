@@ -157,6 +157,8 @@ describe('matchDocument — partial extraction', () => {
     const result = matchDocument(doc({ cardLast4: null, documentDate: null }), [tx()]);
     expect(result.outcome).toBe('NEEDS_REVIEW');
     expect(result.candidates[0].evidenceCoverage).toBeLessThan(MATCHER_CONFIG.thresholds.minAutoEvidenceCoverage);
+    expect(result.candidates[0].confidence).toBe(1);
+    expect(result.candidates[0].decisionConfidence).toBeLessThan(result.candidates[0].confidence);
   });
 });
 
@@ -207,6 +209,15 @@ describe('matchDocument — merchant context', () => {
     expect(result.candidates[0].transactionId).toBe(1);
     expect(result.candidates[0].signals.merchantCity).toBe(1);
     expect(result.candidates[1].signals.merchantCity).toBe(0);
+  });
+
+  test('a human-confirmed merchant alias improves a bank descriptor comparison', () => {
+    const candidate = scoreTransaction(
+      doc({ merchantName: 'Al Rajhi Auto Service' }),
+      tx({ merchantName: 'BANK POS 834923', merchantAliases: ['Al Rajhi Auto Service'] }),
+    );
+    expect(candidate.signals.merchantAlias).toBe(1);
+    expect(candidate.signals.merchant).toBe(1);
   });
 });
 

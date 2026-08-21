@@ -20,10 +20,11 @@ datasource db {
 // ── Domain ──────────────────────────────────────────────────────────────────
 
 model Client {
-  id           Int           @id @default(autoincrement())
-  name         String
-  emails       ClientEmail[]
-  transactions Transaction[]
+  id              Int             @id @default(autoincrement())
+  name            String
+  emails          ClientEmail[]
+  transactions    Transaction[]
+  merchantAliases MerchantAlias[]
 }
 
 /// Allowlist of sender email addresses trusted to submit documents for a client.
@@ -36,21 +37,21 @@ model ClientEmail {
 }
 
 model Transaction {
-  id            Int             @id @default(autoincrement())
-  clientId      Int
-  cardLast4     String
-  driverPhone   String?
-  merchantName  String
+  id                Int             @id @default(autoincrement())
+  clientId          Int
+  cardLast4         String
+  driverPhone       String?
+  merchantName      String
   merchantVatNumber String?
-  invoiceNumber String?
+  invoiceNumber     String?
   authorizationCode String?
-  merchantCategory String?
-  merchantCity String?
-  amount        Int
-  currency      String          @default("SAR")
-  transactionAt DateTime
-  client        Client          @relation(fields: [clientId], references: [id])
-  documents     DocumentMatch[]
+  merchantCategory  String?
+  merchantCity      String?
+  amount            Int
+  currency          String          @default("SAR")
+  transactionAt     DateTime
+  client            Client          @relation(fields: [clientId], references: [id])
+  documents         DocumentMatch[]
 
   @@index([driverPhone])
   @@index([clientId, transactionAt])
@@ -60,14 +61,14 @@ model Transaction {
 // ── Ingestion ───────────────────────────────────────────────────────────────
 
 model Document {
-  id                   Int             @id @default(autoincrement())
+  id                   Int                   @id @default(autoincrement())
   source               DocumentSource
-  externalId           String                  // provider messageId / wamid
-  contentHash          String                  // sha256 of the file bytes
-  semanticFingerprint String?                 // stable invoice/authorization identity
-  ownerKey             String          @default("") // canonical tenant/client scope
-  senderIdentifier     String                  // email address or E.164 phone
-  status               DocumentStatus  @default(RECEIVED)
+  externalId           String // provider messageId / wamid
+  contentHash          String // sha256 of the file bytes
+  semanticFingerprint  String? // stable invoice/authorization identity
+  ownerKey             String                @default("") // canonical tenant/client scope
+  senderIdentifier     String // email address or E.164 phone
+  status               DocumentStatus        @default(RECEIVED)
   // Extraction results — nullable until extraction runs
   documentType         String?
   merchantName         String?
@@ -78,22 +79,23 @@ model Document {
   cardLast4            String?
   invoiceNumber        String?
   authorizationCode    String?
-  fieldConfidences     String?                 // JSON-serialized per-field OCR confidence
+  fieldConfidences     String? // JSON-serialized per-field OCR confidence
   rawText              String?
   extractionConfidence Float?
   errorMessage         String?
   reviewReason         String?
-  statusReason         String?                 // stable machine-readable lifecycle reason
-  statusDetails        String?                 // JSON diagnostics for reviewer explanations/metrics
-  receivedAt           DateTime        @default(now())
-  updatedAt            DateTime        @updatedAt
+  statusReason         String? // stable machine-readable lifecycle reason
+  statusDetails        String? // JSON diagnostics for reviewer explanations/metrics
+  receivedAt           DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
   matches              DocumentMatch[]
+  reviewDecisionEvents ReviewDecisionEvent[]
 
-  @@index([status])
-  @@index([senderIdentifier])
   @@unique([source, externalId])
   @@unique([ownerKey, contentHash])
   @@unique([ownerKey, semanticFingerprint])
+  @@index([status])
+  @@index([senderIdentifier])
 }
 
 model DocumentMatch {
@@ -101,7 +103,8 @@ model DocumentMatch {
   documentId               Int
   transactionId            Int
   confidence               Float
-  signals                  String      // JSON-serialized Record<string, number>
+  decisionConfidence       Float       @default(0)
+  signals                  String // JSON-serialized Record<string, number>
   evidenceCoverage         Float       @default(0)
   contradictions           String      @default("[]")
   rank                     Int?
@@ -114,15 +117,56 @@ model DocumentMatch {
   explanationModel         String?
   explanationPromptVersion String?
   explanationGeneratedAt   DateTime?
+  matcherVersion           String      @default("heuristic-v2")
   createdAt                DateTime    @default(now())
   document                 Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
   transaction              Transaction @relation(fields: [transactionId], references: [id])
+  // A partial unique index for confirmed statuses is defined in the SQL
+  // migration because Prisma's schema DSL cannot represent partial indexes.
 
   @@unique([documentId, transactionId])
   @@index([transactionId, status])
   @@index([documentId, status])
-  // A partial unique index for confirmed statuses is defined in the SQL
-  // migration because Prisma's schema DSL cannot represent partial indexes.
+}
+
+/// Tenant-scoped aliases learned only from human-confirmed receipt/transaction pairs.
+/// The canonical merchant remains the transaction descriptor; aliases improve future
+/// comparisons without weakening tenant isolation or deterministic scoring.
+model MerchantAlias {
+  id                    Int      @id @default(autoincrement())
+  clientId              Int
+  alias                 String
+  normalizedAlias       String
+  canonicalMerchantName String
+  canonicalNormalized   String
+  confirmationCount     Int      @default(1)
+  lastConfirmedAt       DateTime @default(now())
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  client                Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, normalizedAlias, canonicalNormalized])
+  @@index([clientId, canonicalNormalized])
+}
+
+/// Append-only reviewer labels. JSON snapshots preserve the exact extracted input and
+/// candidate set seen by the reviewer even after matcher logic or transaction data changes.
+model ReviewDecisionEvent {
+  id                Int      @id @default(autoincrement())
+  documentId        Int
+  matchId           Int
+  transactionId     Int
+  action            String
+  reason            String
+  decidedBy         String
+  matcherVersion    String
+  documentSnapshot  String
+  candidateSnapshot String
+  createdAt         DateTime @default(now())
+  document          Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, createdAt])
+  @@index([action, createdAt])
 }
 
 // ── Enums ───────────────────────────────────────────────────────────────────

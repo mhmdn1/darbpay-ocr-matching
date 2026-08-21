@@ -8,7 +8,8 @@ import {
 import { resetDatabase, seedBaseData } from './helpers/db';
 
 const baseInput: MatchExplanationInput = {
-  confidence: 1,
+  similarity: 1,
+  decisionConfidence: 1,
   rank: 1,
   candidateCount: 2,
   topScoreGap: 0,
@@ -47,7 +48,8 @@ describe('local match explanation', () => {
   test('explains why a weak alternative is still shown', () => {
     const text = generateLocalExplanation({
       ...baseInput,
-      confidence: 0.44,
+      similarity: 0.55,
+      decisionConfidence: 0.44,
       rank: 2,
       candidateCount: 4,
       signals: [
@@ -93,6 +95,7 @@ describe('on-demand explanation caching', () => {
         documentId: document.id,
         transactionId: transaction.id,
         confidence: 0.81,
+        decisionConfidence: 0.7,
         evidenceCoverage: 0.75,
         rank: 1,
         signals: JSON.stringify({ amount: 1, date: 1, merchant: 1 }),

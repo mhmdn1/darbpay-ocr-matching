@@ -3,30 +3,32 @@ import { MATCHER_CONFIG } from '../lib/services/transaction-matcher';
 import { evaluateMatcher, selectAutoMatchThreshold } from '../lib/services/matcher-evaluation';
 
 async function main() {
-  // Only human-confirmed decisions are ground truth. AUTO_CONFIRMED rows must
-  // never grade the same model that created them.
-  const documents = await prisma.document.findMany({
-    where: { matches: { some: { status: 'CONFIRMED' } } },
-    include: { matches: { orderBy: [{ rank: 'asc' }, { confidence: 'desc' }] } },
-  });
-
-  const predictions = documents.flatMap((document) => {
-    const confirmed = document.matches.find((match) => match.status === 'CONFIRMED');
-    const ranked = document.matches.filter((match) => match.rank != null || match.status !== 'REJECTED');
+  // Append-only human decision snapshots are ground truth. AUTO_CONFIRMED
+  // rows never grade the same model that created them.
+  const events = await prisma.reviewDecisionEvent.findMany({ orderBy: { createdAt: 'asc' } });
+  const predictions = events.flatMap((event) => {
+    const candidates = parseCandidates(event.candidateSnapshot);
+    const actionable = candidates.filter((candidate) => candidate.status === 'CANDIDATE');
+    const terminalReject = event.action === 'REJECT' && actionable.length === 1;
+    if (event.action !== 'CONFIRM' && !terminalReject) return [];
+    const ranked = [...candidates].sort((left, right) =>
+      right.decisionConfidence - left.decisionConfidence || (left.rank ?? 999) - (right.rank ?? 999),
+    );
     const top = ranked[0];
-    if (!confirmed || !top) return [];
+    if (!top) return [];
     const second = ranked[1];
-    const gap = second ? top.confidence - second.confidence : top.confidence;
-    const contradictions = safeArray(top.contradictions);
+    const gap = second ? top.decisionConfidence - second.decisionConfidence : top.decisionConfidence;
     return [{
-      score: top.confidence,
-      correct: top.transactionId === confirmed.transactionId,
-      rankOfCorrect: ranked.findIndex((match) => match.transactionId === confirmed.transactionId) + 1 || null,
+      score: top.decisionConfidence,
+      correct: event.action === 'CONFIRM' && top.transactionId === event.transactionId,
+      rankOfCorrect: event.action === 'CONFIRM'
+        ? ranked.findIndex((candidate) => candidate.transactionId === event.transactionId) + 1 || null
+        : null,
       autoMatched:
-        top.confidence >= MATCHER_CONFIG.thresholds.autoMatch &&
+        top.decisionConfidence >= MATCHER_CONFIG.thresholds.autoMatch &&
         gap >= MATCHER_CONFIG.thresholds.autoMatchGap &&
         top.evidenceCoverage >= MATCHER_CONFIG.thresholds.minAutoEvidenceCoverage &&
-        contradictions.length === 0,
+        top.contradictions.length === 0,
     }];
   });
 
@@ -38,9 +40,37 @@ async function main() {
   }
 }
 
-function safeArray(value: string): unknown[] {
-  try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; }
-  catch { return []; }
+interface SnapshotCandidate {
+  transactionId: number;
+  rank: number | null;
+  decisionConfidence: number;
+  evidenceCoverage: number;
+  contradictions: string[];
+  status: string;
+}
+
+function parseCandidates(value: string): SnapshotCandidate[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((candidate): candidate is Omit<SnapshotCandidate, 'contradictions'> & { contradictions: unknown } =>
+      typeof candidate === 'object' && candidate !== null &&
+      typeof (candidate as SnapshotCandidate).transactionId === 'number' &&
+      typeof (candidate as SnapshotCandidate).decisionConfidence === 'number' &&
+      typeof (candidate as SnapshotCandidate).evidenceCoverage === 'number' &&
+      typeof (candidate as SnapshotCandidate).status === 'string',
+    ).map((candidate): SnapshotCandidate => ({
+      ...candidate,
+      contradictions: parseContradictions(candidate.contradictions),
+    }));
+  } catch { return []; }
+}
+
+function parseContradictions(value: unknown): string[] {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch { return []; }
 }
 
 main().finally(() => prisma.$disconnect());

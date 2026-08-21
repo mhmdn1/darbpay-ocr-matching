@@ -90,6 +90,13 @@ The review page lists NEEDS_REVIEW documents with ranked candidates and
 confirm/reject buttons. Other statuses (MATCHED / UNMATCHED / FAILED) are
 in the "Processing history" table below.
 
+Candidate cards separate **similarity** (agreement across available fields),
+**evidence coverage** (how much expected evidence was present), and conservative
+**decision confidence** (similarity discounted for missing evidence). Rejections
+collect a reason; every human action is saved as an immutable labelled snapshot.
+Confirmed merchant descriptors also create tenant-scoped aliases that improve
+future candidate retrieval and scoring.
+
 Each candidate also has a small **Explain match** button. Explanations are
 strictly on demand: page loads, ingestion, and matching never call an LLM.
 The first click generates and stores a short explanation; refreshes and repeat

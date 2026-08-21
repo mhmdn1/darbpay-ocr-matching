@@ -47,14 +47,18 @@ export interface CandidateTransaction {
   /** Frequencies inside the tenant/date candidate block. */
   merchantFrequency?: number;
   amountFrequency?: number;
+  /** Human-confirmed receipt descriptors for this canonical transaction merchant. */
+  merchantAliases?: string[];
 }
 
 export type MatchOutcome = 'AUTO_MATCHED' | 'NEEDS_REVIEW' | 'UNMATCHED';
 
 export interface MatchCandidate {
   transactionId: number;
-  /** Heuristic ranking score (0..1), pending calibration on reviewer labels. */
+  /** Similarity across the fields that were available on the document. */
   confidence: number;
+  /** Conservative automation score: similarity discounted by missing evidence. */
+  decisionConfidence: number;
   signals: Record<string, number>;
   evidenceCoverage: number;
   availableSignals: string[];
@@ -97,6 +101,8 @@ export const MATCHER_CONFIG = {
   maxCandidates: 5,
 } as const;
 
+export const MATCHER_VERSION = 'heuristic-v2' as const;
+
 export function matchDocument(doc: ExtractedFields, transactions: CandidateTransaction[]): MatchResult {
   if (transactions.length === 0) {
     return {
@@ -108,9 +114,9 @@ export function matchDocument(doc: ExtractedFields, transactions: CandidateTrans
 
   const allScored = transactions
     .map((tx) => scoreTransaction(doc, tx))
-    .sort((a, b) => b.confidence - a.confidence || a.transactionId - b.transactionId);
+    .sort((a, b) => b.decisionConfidence - a.decisionConfidence || b.confidence - a.confidence || a.transactionId - b.transactionId);
   const scored = allScored
-    .filter((candidate) => candidate.confidence >= MATCHER_CONFIG.thresholds.candidateDisplay)
+    .filter((candidate) => candidate.decisionConfidence >= MATCHER_CONFIG.thresholds.candidateDisplay)
     .slice(0, MATCHER_CONFIG.maxCandidates);
 
   const top = scored[0];
@@ -122,11 +128,11 @@ export function matchDocument(doc: ExtractedFields, transactions: CandidateTrans
         'NO_CANDIDATE_ABOVE_DISPLAY_THRESHOLD',
         transactions.length,
         0,
-        allScored[0]?.confidence ?? null,
+        allScored[0]?.decisionConfidence ?? null,
       ),
     };
   }
-  if (top.confidence < MATCHER_CONFIG.thresholds.review) {
+  if (top.decisionConfidence < MATCHER_CONFIG.thresholds.review) {
     return {
       outcome: 'UNMATCHED',
       candidates: [],
@@ -134,16 +140,16 @@ export function matchDocument(doc: ExtractedFields, transactions: CandidateTrans
         'TOP_SCORE_BELOW_REVIEW_THRESHOLD',
         transactions.length,
         scored.length,
-        top.confidence,
+        top.decisionConfidence,
       ),
     };
   }
 
   const second = scored[1];
-  const gap = second ? top.confidence - second.confidence : top.confidence;
+  const gap = second ? top.decisionConfidence - second.decisionConfidence : top.decisionConfidence;
   const topTx = transactions.find((tx) => tx.id === top.transactionId)!;
   const canAutoMatch =
-    top.confidence >= MATCHER_CONFIG.thresholds.autoMatch &&
+    top.decisionConfidence >= MATCHER_CONFIG.thresholds.autoMatch &&
     gap >= MATCHER_CONFIG.thresholds.autoMatchGap &&
     top.evidenceCoverage >= MATCHER_CONFIG.thresholds.minAutoEvidenceCoverage &&
     top.availableSignals.length >= MATCHER_CONFIG.thresholds.minAutoSignals &&
@@ -211,7 +217,9 @@ export function scoreTransaction(doc: ExtractedFields, tx: CandidateTransaction)
   }
 
   if (doc.merchantName) {
-    let merchantScore = scoreMerchant(doc.merchantName, tx.merchantName);
+    const aliasScore = Math.max(0, ...(tx.merchantAliases ?? []).map((alias) => scoreMerchant(doc.merchantName!, alias)));
+    let merchantScore = Math.max(scoreMerchant(doc.merchantName, tx.merchantName), aliasScore);
+    if (aliasScore > 0) signals.merchantAlias = aliasScore;
     const docDescriptor = parseMerchantDescriptor(doc.merchantName);
     const txDescriptor = parseMerchantDescriptor(`${tx.merchantName} ${tx.merchantCity ?? ''}`);
     if (docDescriptor.city && txDescriptor.city) {
@@ -254,11 +262,17 @@ export function scoreTransaction(doc: ExtractedFields, tx: CandidateTransaction)
 
   if (contradictions.length > 0) confidence *= 0.35 ** contradictions.length;
 
+  // Missing evidence should not display as certainty. sqrt keeps three strong
+  // independent signals eligible for automation while discounting sparse matches.
+  const evidenceCoverage = round3(clamp01(effectiveWeight));
+  const decisionConfidence = round3(clamp01(confidence * Math.sqrt(evidenceCoverage)));
+
   return {
     transactionId: tx.id,
     confidence: round3(clamp01(confidence)),
+    decisionConfidence,
     signals: mapValues(signals, round3),
-    evidenceCoverage: round3(clamp01(effectiveWeight)),
+    evidenceCoverage,
     availableSignals,
     contradictions,
   };

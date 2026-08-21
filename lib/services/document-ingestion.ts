@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import prisma from '@/lib/prisma';
-import type { PrismaClient } from '@/lib/generated/prisma/client';
+import type { Prisma, PrismaClient } from '@/lib/generated/prisma/client';
+import { MatchStatus } from '@/lib/generated/prisma/enums';
 import type { DocumentExtractor, ExtractedDocument } from '@/lib/extraction/types';
 import { enrichWithZatcaQr } from '@/lib/extraction/zatca-qr';
 import {
   MATCHER_CONFIG,
+  MATCHER_VERSION,
   matchDocument,
   normalizeMerchant,
   type CandidateTransaction,
@@ -216,7 +218,7 @@ export async function ingestDocument(
   // ── 4. Load scoped candidate transactions ─────────────────────────────────
   let candidates: CandidateTransaction[];
   try {
-    candidates = await loadCandidates(db, input.source, input.senderIdentifier, extracted.documentDate);
+    candidates = await loadCandidates(db, input.source, input.senderIdentifier, extracted, doc.receivedAt);
     log.info('candidate block loaded', {
       documentId: doc.id,
       candidateCount: candidates.length,
@@ -324,34 +326,107 @@ export async function ingestDocument(
   }
 }
 
-async function loadCandidates(
+export async function loadCandidates(
   db: PrismaClient,
   source: IngestionSource,
   senderIdentifier: string,
-  documentDate: string | null,
+  extracted: ExtractedDocument,
+  receivedAt: Date,
 ): Promise<CandidateTransaction[]> {
-  const dateWindow = candidateDateWindow(documentDate);
-  if (source === 'WHATSAPP') {
-    const normalized = normalizePhone(senderIdentifier);
-    const txs = await db.transaction.findMany({
-      where: { driverPhone: normalized, ...(dateWindow ? { transactionAt: dateWindow } : {}) },
-      include: {
-        documents: { where: { status: { in: ['CONFIRMED', 'AUTO_CONFIRMED'] } }, select: { id: true } },
-      },
+  const scope = await candidateScope(db, source, senderIdentifier);
+  if (!scope) return [];
+
+  const basisDate = extracted.documentDate ?? receivedAt.toISOString();
+  const tightWindow = candidateDateWindow(basisDate, 14);
+  const broadWindow = candidateDateWindow(basisDate, 30);
+  const include = {
+    documents: {
+      where: { status: { in: [MatchStatus.CONFIRMED, MatchStatus.AUTO_CONFIRMED] } },
+      select: { id: true },
+    },
+  } satisfies Prisma.TransactionInclude;
+  const blocks: Prisma.TransactionWhereInput[] = [];
+
+  const exactIdentifiers: Prisma.TransactionWhereInput[] = [];
+  if (extracted.authorizationCode) exactIdentifiers.push({ authorizationCode: extracted.authorizationCode });
+  if (extracted.invoiceNumber) exactIdentifiers.push({ invoiceNumber: extracted.invoiceNumber });
+  if (extracted.vatNumber) exactIdentifiers.push({ merchantVatNumber: extracted.vatNumber });
+  if (exactIdentifiers.length > 0) blocks.push({ ...scope.where, OR: exactIdentifiers });
+
+  if (extracted.cardLast4 && tightWindow) {
+    blocks.push({ ...scope.where, cardLast4: normalizeCardLast4(extracted.cardLast4), transactionAt: tightWindow });
+  }
+  if (extracted.totalAmount != null && tightWindow) {
+    const tolerance = Math.max(100, Math.round(extracted.totalAmount * 0.30));
+    blocks.push({
+      ...scope.where,
+      amount: { gte: Math.max(1, extracted.totalAmount - tolerance), lte: extracted.totalAmount + tolerance },
+      transactionAt: tightWindow,
     });
-    return addCandidateFrequencies(txs.map(toCandidate));
   }
 
-  // EMAIL: look up sender → client → transactions
-  const senderRow = await db.clientEmail.findUnique({ where: { email: senderIdentifier.toLowerCase() } });
-  if (!senderRow) return [];
-  const txs = await db.transaction.findMany({
-    where: { clientId: senderRow.clientId, ...(dateWindow ? { transactionAt: dateWindow } : {}) },
-    include: {
-      documents: { where: { status: { in: ['CONFIRMED', 'AUTO_CONFIRMED'] } }, select: { id: true } },
-    },
+  const normalizedDocumentMerchant = extracted.merchantName ? normalizeMerchant(extracted.merchantName) : '';
+  if (normalizedDocumentMerchant && scope.clientIds.length > 0 && broadWindow) {
+    const learned = await db.merchantAlias.findMany({
+      where: { clientId: { in: scope.clientIds }, normalizedAlias: normalizedDocumentMerchant },
+      select: { canonicalMerchantName: true },
+    });
+    const canonicalNames = [...new Set(learned.map((alias) => alias.canonicalMerchantName))];
+    if (canonicalNames.length > 0) {
+      blocks.push({ ...scope.where, merchantName: { in: canonicalNames }, transactionAt: broadWindow });
+    }
+  }
+
+  // Bounded safety net: a new merchant or OCR variation must still be able to
+  // enter the candidate set before any alias or exact identifier has been learned.
+  if (broadWindow) blocks.push({ ...scope.where, transactionAt: broadWindow });
+
+  const transactionBlocks = await Promise.all(blocks.map((where) => db.transaction.findMany({
+    where,
+    include,
+    orderBy: { transactionAt: 'desc' },
+    take: 200,
+  })));
+  const unique = new Map<number, TxWithConfirmed>();
+  for (const transaction of transactionBlocks.flat()) unique.set(transaction.id, transaction);
+
+  const aliases = scope.clientIds.length === 0 ? [] : await db.merchantAlias.findMany({
+    where: { clientId: { in: scope.clientIds } },
+    select: { canonicalNormalized: true, alias: true },
   });
-  return addCandidateFrequencies(txs.map(toCandidate));
+  const aliasesByCanonical = new Map<string, string[]>();
+  for (const alias of aliases) {
+    const existing = aliasesByCanonical.get(alias.canonicalNormalized) ?? [];
+    existing.push(alias.alias);
+    aliasesByCanonical.set(alias.canonicalNormalized, existing);
+  }
+
+  return addCandidateFrequencies([...unique.values()].map((transaction) => ({
+    ...toCandidate(transaction),
+    merchantAliases: aliasesByCanonical.get(normalizeMerchant(transaction.merchantName)) ?? [],
+  })));
+}
+
+async function candidateScope(
+  db: PrismaClient,
+  source: IngestionSource,
+  senderIdentifier: string,
+): Promise<{ where: Prisma.TransactionWhereInput; clientIds: number[] } | null> {
+  if (source === 'EMAIL') {
+    const sender = await db.clientEmail.findUnique({
+      where: { email: senderIdentifier.toLowerCase() },
+      select: { clientId: true },
+    });
+    return sender ? { where: { clientId: sender.clientId }, clientIds: [sender.clientId] } : null;
+  }
+
+  const driverPhone = normalizePhone(senderIdentifier);
+  const owners = await db.transaction.findMany({
+    where: { driverPhone },
+    distinct: ['clientId'],
+    select: { clientId: true },
+  });
+  return { where: { driverPhone }, clientIds: owners.map((owner) => owner.clientId) };
 }
 
 type TxWithConfirmed = Awaited<ReturnType<PrismaClient['transaction']['findMany']>>[number] & {
@@ -410,6 +485,8 @@ async function persistMatchResult(
     outcome: isAuditSample ? 'NEEDS_REVIEW' : result.outcome,
     candidateCount: result.candidates.length,
     topScore: topCandidate.confidence,
+    topSimilarity: topCandidate.confidence,
+    decisionConfidence: topCandidate.decisionConfidence,
     evidenceCoverage: topCandidate.evidenceCoverage,
     contradictions: topCandidate.contradictions,
     auditSample: isAuditSample,
@@ -423,10 +500,12 @@ async function persistMatchResult(
           documentId,
           transactionId: topCandidate.transactionId,
           confidence: topCandidate.confidence,
+          decisionConfidence: topCandidate.decisionConfidence,
           signals: JSON.stringify(topCandidate.signals),
           evidenceCoverage: topCandidate.evidenceCoverage,
           contradictions: JSON.stringify(topCandidate.contradictions),
           rank: 1,
+          matcherVersion: MATCHER_VERSION,
           status: 'AUTO_CONFIRMED',
           decidedBy: 'system',
           decidedAt: new Date(),
@@ -444,10 +523,12 @@ async function persistMatchResult(
             documentId,
             transactionId: c.transactionId,
             confidence: c.confidence,
+            decisionConfidence: c.decisionConfidence,
             signals: JSON.stringify(c.signals),
             evidenceCoverage: c.evidenceCoverage,
             contradictions: JSON.stringify(c.contradictions),
             rank: index + 1,
+            matcherVersion: MATCHER_VERSION,
             status: 'CANDIDATE',
           },
         });
@@ -461,7 +542,7 @@ async function persistMatchResult(
           statusDetails: serializeStatusDetails({
             scopedCandidateCount: result.candidates.length,
             displayedCandidateCount: result.candidates.length,
-            topScore: result.candidates[0]?.confidence ?? null,
+            topScore: result.candidates[0]?.decisionConfidence ?? null,
             reviewThreshold: MATCHER_CONFIG.thresholds.review,
           }),
         },
@@ -478,11 +559,11 @@ async function persistMatchResult(
 }
 
 /** Restrict expensive scoring to a plausible temporal block. */
-export function candidateDateWindow(documentDate: string | null): { gte: Date; lte: Date } | null {
+export function candidateDateWindow(documentDate: string | null, radiusDays = 30): { gte: Date; lte: Date } | null {
   if (!documentDate) return null;
   const date = new Date(documentDate);
   if (!Number.isFinite(date.getTime())) return null;
-  const radiusMs = 30 * 86_400_000;
+  const radiusMs = Math.max(1, radiusDays) * 86_400_000;
   return { gte: new Date(date.getTime() - radiusMs), lte: new Date(date.getTime() + radiusMs) };
 }
 
@@ -566,6 +647,13 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 export function normalizePhone(phone: string): string {
   const digits = phone.replace(/\D/g, '');
   return digits.length > 0 ? `+${digits}` : phone;
+}
+
+function normalizeCardLast4(value: string): string {
+  const digits = value
+    .replace(/[٠-٩]/g, (digit) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)))
+    .replace(/\D/g, '');
+  return digits.slice(-4);
 }
 
 function isUniqueConstraintError(error: unknown): error is { code: string } {

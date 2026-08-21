@@ -24,6 +24,7 @@ interface CandidateRow {
   invoiceNumber: string | null;
   authorizationCode: string | null;
   confidence: number;
+  decisionConfidence: number;
   signals: Record<string, number>;
   evidenceCoverage: number;
   contradictions: string[];
@@ -80,7 +81,7 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
         // confirmed/rejected relationship so it can explain the outcome.
         where: { status: { in: visibleMatchStatuses } },
         include: { transaction: true },
-        orderBy: [{ confidence: 'desc' }, { rank: 'asc' }],
+        orderBy: [{ decisionConfidence: 'desc' }, { rank: 'asc' }],
       },
     },
   });
@@ -106,7 +107,7 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
     statusReason: d.statusReason,
     statusDetails: d.statusDetails,
     candidates: d.matches
-      .filter((m) => status !== 'NEEDS_REVIEW' || m.confidence >= MATCHER_CONFIG.thresholds.candidateDisplay)
+      .filter((m) => status !== 'NEEDS_REVIEW' || m.decisionConfidence >= MATCHER_CONFIG.thresholds.candidateDisplay)
       .map((m) => ({
       matchId: m.id,
       transactionId: m.transactionId,
@@ -119,6 +120,7 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
       invoiceNumber: m.transaction.invoiceNumber,
       authorizationCode: m.transaction.authorizationCode,
       confidence: m.confidence,
+      decisionConfidence: m.decisionConfidence,
       signals: safeParseSignals(m.signals),
       evidenceCoverage: m.evidenceCoverage,
       contradictions: safeParseArray(m.contradictions),
@@ -155,8 +157,8 @@ function reviewPriority(document: DocRow): number {
   const top = document.candidates[0];
   if (!top) return 0;
   const second = document.candidates[1];
-  const gap = second ? top.confidence - second.confidence : top.confidence;
-  const thresholdUncertainty = 1 - Math.min(1, Math.abs(top.confidence - 0.82) / 0.27);
+  const gap = second ? top.decisionConfidence - second.decisionConfidence : top.decisionConfidence;
+  const thresholdUncertainty = 1 - Math.min(1, Math.abs(top.decisionConfidence - 0.82) / 0.27);
   const ambiguity = Math.max(0, 0.12 - gap) / 0.12;
   return thresholdUncertainty + ambiguity + top.contradictions.length * 0.25;
 }
@@ -292,7 +294,7 @@ function OutcomeDetails({ doc }: { doc: DocRow }) {
         {relatedMatch && (
           <div className="rounded-md bg-[#f5f7ff] p-2 text-slate-700">
             <p className="font-semibold">Transaction #{relatedMatch.transactionId} · {relatedMatch.merchantName}</p>
-            <p>{formatMoney(relatedMatch.amount, relatedMatch.currency)} · score {Math.round(relatedMatch.confidence * 100)}%</p>
+            <p>{formatMoney(relatedMatch.amount, relatedMatch.currency)} · decision confidence {Math.round(relatedMatch.decisionConfidence * 100)}%</p>
             {relatedMatch.decidedBy && <p>Decision by: {relatedMatch.decidedBy}</p>}
           </div>
         )}
@@ -312,8 +314,8 @@ function OutcomeDetails({ doc }: { doc: DocRow }) {
 }
 
 function DocumentCard({ doc }: { doc: DocRow }) {
-  const topConfidence = doc.candidates[0]?.confidence ?? 0;
-  const hasTopTie = doc.candidates.length > 1 && doc.candidates[1].confidence === topConfidence;
+  const topDecisionConfidence = doc.candidates[0]?.decisionConfidence ?? 0;
+  const hasTopTie = doc.candidates.length > 1 && doc.candidates[1].decisionConfidence === topDecisionConfidence;
   return (
     <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-200/50">
       <header className="flex flex-col justify-between gap-5 border-b border-slate-100 p-5 sm:flex-row sm:items-start lg:p-6">
@@ -341,14 +343,18 @@ function DocumentCard({ doc }: { doc: DocRow }) {
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-5 sm:text-right">
+        <div className="grid grid-cols-3 gap-4 sm:text-right">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Receipt total</p>
             <p className="mt-1 text-xl font-semibold">{formatMoney(doc.totalAmount, doc.currency)}</p>
           </div>
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Match score</p>
-            <p className="mt-1 text-xl font-semibold text-[#3157d5]">{Math.round(topConfidence * 100)}%</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Similarity</p>
+            <p className="mt-1 text-xl font-semibold">{Math.round((doc.candidates[0]?.confidence ?? 0) * 100)}%</p>
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Decision confidence</p>
+            <p className="mt-1 text-xl font-semibold text-[#3157d5]">{Math.round(topDecisionConfidence * 100)}%</p>
           </div>
         </div>
       </header>
@@ -369,7 +375,7 @@ function DocumentCard({ doc }: { doc: DocRow }) {
           </p>
         </div>
         {doc.candidates.map((c, index) => {
-          const tiedForTop = hasTopTie && c.confidence === topConfidence;
+          const tiedForTop = hasTopTie && c.decisionConfidence === topDecisionConfidence;
           const uniquelyRecommended = index === 0 && !hasTopTie;
           const highlighted = tiedForTop || uniquelyRecommended;
           return (
@@ -406,12 +412,24 @@ function DocumentCard({ doc }: { doc: DocRow }) {
                   initialProvider={c.explanationProvider}
                 />
               </div>
-              <div className="flex items-center justify-between gap-5 border-t border-slate-200/70 pt-4 lg:w-[270px] lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
-                <div className="min-w-[72px]">
-                  <p className="text-2xl font-semibold tracking-tight">{Math.round(c.confidence * 100)}%</p>
-                  <div className="mt-1 h-1.5 w-16 overflow-hidden rounded-full bg-slate-200">
-                    <div className="h-full rounded-full bg-[#3157d5]" style={{ width: `${Math.round(c.confidence * 100)}%` }} />
+              <div className="flex items-center justify-between gap-4 border-t border-slate-200/70 pt-4 lg:w-[380px] lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
+                <div className="grid min-w-[190px] grid-cols-3 gap-2 text-center">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Similarity</p>
+                    <p className="mt-1 text-lg font-semibold">{Math.round(c.confidence * 100)}%</p>
                   </div>
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Evidence</p>
+                    <p className="mt-1 text-lg font-semibold">{Math.round(c.evidenceCoverage * 100)}%</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-[#3157d5]">Decision</p>
+                    <p className="mt-1 text-lg font-semibold text-[#3157d5]">{Math.round(c.decisionConfidence * 100)}%</p>
+                  </div>
+                  <div className="col-span-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                    <div className="h-full rounded-full bg-[#3157d5]" style={{ width: `${Math.round(c.decisionConfidence * 100)}%` }} />
+                  </div>
+                  <p className="col-span-3 text-[10px] leading-4 text-slate-400">Decision confidence discounts missing evidence.</p>
                 </div>
                 <DecisionButtons matchId={c.matchId} />
               </div>
@@ -525,6 +543,7 @@ function SignalIndicator({ score }: { score?: number }) {
 function signalLabel(signal: string): string {
   const labels: Record<string, string> = {
     cardLast4: 'Card', merchantRarity: 'Merchant rarity', amountRarity: 'Amount rarity',
+    merchantAlias: 'Learned alias',
     merchantCity: 'City', merchantBranch: 'Branch', dateFallback: 'Received date',
     vatNumber: 'VAT number', invoiceNumber: 'Invoice number', authorizationCode: 'Authorization',
   };

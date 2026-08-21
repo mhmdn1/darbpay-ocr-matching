@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import prisma from '@/lib/prisma';
-import { candidateDateWindow, ingestDocument, sha256, shouldAuditAutoMatch } from '@/lib/services/document-ingestion';
+import { candidateDateWindow, ingestDocument, loadCandidates, sha256, shouldAuditAutoMatch } from '@/lib/services/document-ingestion';
 import { MockExtractor } from '@/lib/extraction/mock-extractor';
 import type { DocumentExtractor, ExtractedDocument } from '@/lib/extraction/types';
 import { resetDatabase, seedBaseData, type SeededClient } from './helpers/db';
@@ -152,6 +152,49 @@ describe('ingestion policy helpers', () => {
     const window = candidateDateWindow('2025-06-15T00:00:00Z')!;
     expect((window.lte.getTime() - window.gte.getTime()) / 86_400_000).toBe(60);
     expect(candidateDateWindow('invalid')).toBeNull();
+  });
+
+  test('exact identifiers retrieve a transaction outside the normal date block', async () => {
+    const transaction = await prisma.transaction.create({
+      data: {
+        clientId: alRashed.clientId,
+        cardLast4: '4411',
+        merchantName: 'HISTORIC SUPPLIER',
+        amount: 99900,
+        currency: 'SAR',
+        authorizationCode: 'AUTH-OUTSIDE-WINDOW',
+        transactionAt: new Date('2024-01-01T00:00:00Z'),
+      },
+    });
+    const candidates = await loadCandidates(prisma, 'EMAIL', alRashed.email, {
+      documentType: 'RECEIPT', merchantName: 'Historic Supplier', vatNumber: null,
+      totalAmount: 99900, currency: 'SAR', documentDate: '2025-06-20T00:00:00Z',
+      cardLast4: '4411', invoiceNumber: null, authorizationCode: 'AUTH-OUTSIDE-WINDOW',
+      rawText: '', extractionConfidence: 0.99,
+    }, new Date('2025-06-20T00:01:00Z'));
+    expect(candidates.map((candidate) => candidate.id)).toContain(transaction.id);
+  });
+
+  test('candidate retrieval attaches tenant-scoped learned aliases', async () => {
+    const transaction = await prisma.transaction.findFirstOrThrow({
+      where: { clientId: alRashed.clientId, merchantName: 'ALRAJHI AUTO SVC RUH' },
+    });
+    await prisma.merchantAlias.create({
+      data: {
+        clientId: alRashed.clientId,
+        alias: 'Al Rajhi Auto Service',
+        normalizedAlias: 'AL RAJHI AUTO SERVICE',
+        canonicalMerchantName: transaction.merchantName,
+        canonicalNormalized: 'ALRAJHI AUTO SVC',
+      },
+    });
+    const candidates = await loadCandidates(prisma, 'EMAIL', alRashed.email, {
+      documentType: 'TAX_INVOICE', merchantName: 'Al Rajhi Auto Service', vatNumber: null,
+      totalAmount: transaction.amount, currency: 'SAR', documentDate: transaction.transactionAt.toISOString(),
+      cardLast4: transaction.cardLast4, invoiceNumber: null, rawText: '', extractionConfidence: 0.99,
+    }, transaction.transactionAt);
+    expect(candidates.find((candidate) => candidate.id === transaction.id)?.merchantAliases)
+      .toContain('Al Rajhi Auto Service');
   });
 
   test('auto-match audit sampling is deterministic and obeys boundary rates', () => {

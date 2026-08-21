@@ -1,6 +1,9 @@
 import prisma from '@/lib/prisma';
+import type { Prisma } from '@/lib/generated/prisma/client';
 import { log } from '@/lib/logger';
 import { serializeStatusDetails, STATUS_REASON } from '@/lib/services/document-status-reason';
+import { MATCHER_VERSION, normalizeMerchant } from '@/lib/services/transaction-matcher';
+import type { RejectionReason } from '@/lib/domain/review-reasons';
 
 const CONFIRMED_STATUSES = ['CONFIRMED', 'AUTO_CONFIRMED'] as const;
 
@@ -25,16 +28,18 @@ export interface ReviewResult {
  */
 export async function confirmMatchTx(matchId: number, decidedBy: string): Promise<ReviewResult> {
   return prisma.$transaction(async (tx) => {
-    const match = await tx.documentMatch.findUnique({ where: { id: matchId } });
+    const match = await tx.documentMatch.findUnique({
+      where: { id: matchId },
+      include: { document: true, transaction: true },
+    });
     if (!match) throw new Error('Match not found');
 
     // Idempotent replay: already confirmed by an earlier request.
     if (match.status === 'CONFIRMED' || match.status === 'AUTO_CONFIRMED') {
-      const doc = await tx.document.findUnique({ where: { id: match.documentId } });
       return {
         matchId: match.id,
         documentId: match.documentId,
-        documentStatus: doc?.status ?? 'MATCHED',
+        documentStatus: match.document.status,
         matchStatus: match.status,
       };
     }
@@ -57,6 +62,8 @@ export async function confirmMatchTx(matchId: number, decidedBy: string): Promis
           'Reject the existing match first if this is a correction.',
       );
     }
+
+    const snapshot = await captureDecisionSnapshot(tx, match.documentId);
 
     // Race-safe confirm: only transition if still CANDIDATE.
     const now = new Date();
@@ -83,8 +90,29 @@ export async function confirmMatchTx(matchId: number, decidedBy: string): Promis
       data: {
         status: 'MATCHED',
         statusReason: STATUS_REASON.HUMAN_CONFIRMED,
-        statusDetails: serializeStatusDetails({ topScore: match.confidence }),
+        statusDetails: serializeStatusDetails({ topScore: match.decisionConfidence }),
       },
+    });
+
+    await tx.reviewDecisionEvent.create({
+      data: {
+        documentId: match.documentId,
+        matchId: match.id,
+        transactionId: match.transactionId,
+        action: 'CONFIRM',
+        reason: 'REVIEWER_SELECTED',
+        decidedBy,
+        matcherVersion: match.matcherVersion || MATCHER_VERSION,
+        documentSnapshot: snapshot.documentSnapshot,
+        candidateSnapshot: snapshot.candidateSnapshot,
+      },
+    });
+
+    await learnMerchantAlias(tx, {
+      clientId: match.transaction.clientId,
+      documentMerchant: match.document.merchantName,
+      canonicalMerchant: match.transaction.merchantName,
+      confirmedAt: now,
     });
 
     log.info('match confirmed', { matchId, documentId: match.documentId });
@@ -101,17 +129,23 @@ export async function confirmMatchTx(matchId: number, decidedBy: string): Promis
  * Reject a candidate match. If the document has no remaining CANDIDATE
  * matches after this rejection, its status flips to UNMATCHED.
  */
-export async function rejectMatchTx(matchId: number, decidedBy: string): Promise<ReviewResult> {
+export async function rejectMatchTx(
+  matchId: number,
+  decidedBy: string,
+  reason: RejectionReason = 'NOT_SAME_PURCHASE',
+): Promise<ReviewResult> {
   return prisma.$transaction(async (tx) => {
-    const match = await tx.documentMatch.findUnique({ where: { id: matchId } });
+    const match = await tx.documentMatch.findUnique({
+      where: { id: matchId },
+      include: { document: true },
+    });
     if (!match) throw new Error('Match not found');
 
     if (match.status === 'REJECTED') {
-      const doc = await tx.document.findUnique({ where: { id: match.documentId } });
       return {
         matchId: match.id,
         documentId: match.documentId,
-        documentStatus: doc?.status ?? 'UNMATCHED',
+        documentStatus: match.document.status,
         matchStatus: match.status,
       };
     }
@@ -119,6 +153,8 @@ export async function rejectMatchTx(matchId: number, decidedBy: string): Promise
     if (match.status === 'CONFIRMED' || match.status === 'AUTO_CONFIRMED') {
       throw new Error('Cannot reject an already-confirmed match');
     }
+
+    const snapshot = await captureDecisionSnapshot(tx, match.documentId);
 
     const now = new Date();
     const rejected = await tx.documentMatch.updateMany({
@@ -149,6 +185,21 @@ export async function rejectMatchTx(matchId: number, decidedBy: string): Promise
       });
     }
 
+
+    await tx.reviewDecisionEvent.create({
+      data: {
+        documentId: match.documentId,
+        matchId: match.id,
+        transactionId: match.transactionId,
+        action: 'REJECT',
+        reason,
+        decidedBy,
+        matcherVersion: match.matcherVersion || MATCHER_VERSION,
+        documentSnapshot: snapshot.documentSnapshot,
+        candidateSnapshot: snapshot.candidateSnapshot,
+      },
+    });
+
     log.info('match rejected', { matchId, documentId: match.documentId, remaining });
     return {
       matchId: match.id,
@@ -156,5 +207,91 @@ export async function rejectMatchTx(matchId: number, decidedBy: string): Promise
       documentStatus,
       matchStatus: 'REJECTED',
     };
+  });
+}
+
+async function captureDecisionSnapshot(tx: Prisma.TransactionClient, documentId: number) {
+  const document = await tx.document.findUniqueOrThrow({
+    where: { id: documentId },
+    include: {
+      matches: {
+        include: { transaction: true },
+        orderBy: [{ rank: 'asc' }, { id: 'asc' }],
+      },
+    },
+  });
+  const documentSnapshot = JSON.stringify({
+    documentId: document.id,
+    source: document.source,
+    documentType: document.documentType,
+    merchantName: document.merchantName,
+    totalAmount: document.totalAmount,
+    currency: document.currency,
+    documentDate: document.documentDate?.toISOString() ?? null,
+    cardLast4: document.cardLast4,
+    vatNumber: document.vatNumber,
+    invoiceNumber: document.invoiceNumber,
+    authorizationCode: document.authorizationCode,
+    fieldConfidences: document.fieldConfidences,
+    extractionConfidence: document.extractionConfidence,
+  });
+  const candidateSnapshot = JSON.stringify(document.matches.map((candidate) => ({
+    matchId: candidate.id,
+    transactionId: candidate.transactionId,
+    rank: candidate.rank,
+    similarity: candidate.confidence,
+    decisionConfidence: candidate.decisionConfidence,
+    evidenceCoverage: candidate.evidenceCoverage,
+    signals: candidate.signals,
+    contradictions: candidate.contradictions,
+    status: candidate.status,
+    matcherVersion: candidate.matcherVersion,
+    transaction: {
+      merchantName: candidate.transaction.merchantName,
+      amount: candidate.transaction.amount,
+      currency: candidate.transaction.currency,
+      transactionAt: candidate.transaction.transactionAt.toISOString(),
+      cardLast4: candidate.transaction.cardLast4,
+    },
+  })));
+  return { documentSnapshot, candidateSnapshot };
+}
+
+async function learnMerchantAlias(
+  tx: Prisma.TransactionClient,
+  input: {
+    clientId: number;
+    documentMerchant: string | null;
+    canonicalMerchant: string;
+    confirmedAt: Date;
+  },
+): Promise<void> {
+  if (!input.documentMerchant) return;
+  const normalizedAlias = normalizeMerchant(input.documentMerchant);
+  const canonicalNormalized = normalizeMerchant(input.canonicalMerchant);
+  if (!normalizedAlias || !canonicalNormalized) return;
+
+  await tx.merchantAlias.upsert({
+    where: {
+      clientId_normalizedAlias_canonicalNormalized: {
+        clientId: input.clientId,
+        normalizedAlias,
+        canonicalNormalized,
+      },
+    },
+    update: {
+      alias: input.documentMerchant,
+      canonicalMerchantName: input.canonicalMerchant,
+      confirmationCount: { increment: 1 },
+      lastConfirmedAt: input.confirmedAt,
+    },
+    create: {
+      clientId: input.clientId,
+      alias: input.documentMerchant,
+      normalizedAlias,
+      canonicalMerchantName: input.canonicalMerchant,
+      canonicalNormalized,
+      lastConfirmedAt: input.confirmedAt,
+    },
   });
 }
