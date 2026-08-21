@@ -215,7 +215,11 @@ describe('50-case matcher edge matrix — extraction reliability and identifiers
 
 describe('50-case matcher edge matrix — outcomes and ranking (43–50)', () => {
   test('43 no transactions is unmatched', () => {
-    expect(matchDocument(document(), [])).toEqual({ outcome: 'UNMATCHED', candidates: [] });
+    expect(matchDocument(document(), [])).toEqual(expect.objectContaining({
+      outcome: 'UNMATCHED',
+      candidates: [],
+      diagnostics: expect.objectContaining({ reason: 'NO_SCOPED_TRANSACTIONS', scopedCandidateCount: 0 }),
+    }));
   });
 
   test('44 a candidate below the 35% display floor is omitted', () => {
@@ -223,7 +227,11 @@ describe('50-case matcher edge matrix — outcomes and ranking (43–50)', () =>
       document({ merchantName: null, totalAmount: null, cardLast4: null, documentDate: '2025-06-28T08:15:00Z' }),
       [transaction()],
     );
-    expect(result).toEqual({ outcome: 'UNMATCHED', candidates: [] });
+    expect(result).toEqual(expect.objectContaining({
+      outcome: 'UNMATCHED',
+      candidates: [],
+      diagnostics: expect.objectContaining({ reason: 'NO_CANDIDATE_ABOVE_DISPLAY_THRESHOLD' }),
+    }));
   });
 
   test('45 a displayed candidate below the 55% review floor still returns unmatched', () => {
@@ -231,7 +239,11 @@ describe('50-case matcher edge matrix — outcomes and ranking (43–50)', () =>
       document({ merchantName: null, totalAmount: null, cardLast4: null, documentDate: '2025-06-22T08:15:00Z' }),
       [transaction()],
     );
-    expect(result).toEqual({ outcome: 'UNMATCHED', candidates: [] });
+    expect(result).toEqual(expect.objectContaining({
+      outcome: 'UNMATCHED',
+      candidates: [],
+      diagnostics: expect.objectContaining({ reason: 'TOP_SCORE_BELOW_REVIEW_THRESHOLD' }),
+    }));
   });
 
   test('46 a single complete, contradiction-free candidate auto-matches', () => {

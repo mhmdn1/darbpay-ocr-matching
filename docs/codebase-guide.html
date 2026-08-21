@@ -1,0 +1,1226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A visual guide to the Darb receipt and invoice matching codebase.">
+  <title>Darb — Codebase Guide</title>
+  <style>
+    :root {
+      --blue: #176df6;
+      --blue-strong: #3157d5;
+      --blue-soft: #eaf1ff;
+      --navy: #071426;
+      --text: #17243a;
+      --muted: #637692;
+      --line: #dce5f2;
+      --bg: #f4f7fc;
+      --surface: #ffffff;
+      --surface-alt: #f8faff;
+      --green: #0b9b6b;
+      --green-soft: #e9fbf4;
+      --amber: #c56a06;
+      --amber-soft: #fff7e5;
+      --red: #d62e4f;
+      --red-soft: #fff0f3;
+      --purple: #7357d9;
+      --purple-soft: #f2efff;
+      --shadow: 0 16px 50px rgba(35, 66, 116, 0.09);
+      --radius: 20px;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html { scroll-behavior: smooth; scroll-padding-top: 104px; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 10% -10%, rgba(23, 109, 246, 0.12), transparent 28rem),
+        var(--bg);
+      font-family: var(--sans);
+      line-height: 1.6;
+    }
+    a { color: inherit; }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    code, pre { font-family: var(--mono); }
+    :focus-visible { outline: 3px solid rgba(23, 109, 246, 0.35); outline-offset: 3px; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      border-bottom: 1px solid rgba(220, 229, 242, 0.92);
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(18px);
+    }
+    .topbar-inner {
+      width: min(1240px, calc(100% - 40px));
+      min-height: 76px;
+      margin: auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 195px; }
+    .brand img { width: 120px; height: auto; display: block; }
+    .brand-divider { width: 1px; height: 28px; background: var(--line); }
+    .brand-label { color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
+    .nav { display: flex; align-items: center; gap: 6px; }
+    .nav a {
+      padding: 9px 11px;
+      border-radius: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .nav a:hover, .nav a.active { color: var(--blue-strong); background: var(--blue-soft); }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .icon-button {
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      color: var(--muted);
+      background: var(--surface);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .icon-button:hover { color: var(--blue-strong); border-color: #b9caff; background: var(--blue-soft); }
+
+    .shell { width: min(1240px, calc(100% - 40px)); margin: 0 auto; padding: 42px 0 80px; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
+      gap: 34px;
+      align-items: center;
+      padding: 48px;
+      border: 1px solid rgba(178, 201, 244, 0.8);
+      border-radius: 28px;
+      background: linear-gradient(135deg, #ffffff 15%, #f2f6ff 100%);
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 320px;
+      height: 320px;
+      right: -120px;
+      top: -140px;
+      border-radius: 50%;
+      background: rgba(23, 109, 246, 0.08);
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--blue-strong);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.17em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 760px;
+      margin-bottom: 18px;
+      color: var(--navy);
+      font-size: clamp(38px, 5vw, 66px);
+      line-height: 1.03;
+      letter-spacing: -0.05em;
+    }
+    .hero-copy {
+      max-width: 760px;
+      margin-bottom: 26px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+    .hero-copy strong { color: var(--text); }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .primary-link, .secondary-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 10px 16px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 800;
+      text-decoration: none;
+    }
+    .primary-link { color: #fff; background: var(--blue-strong); box-shadow: 0 8px 20px rgba(49, 87, 213, 0.2); }
+    .primary-link:hover { background: #2749bc; }
+    .secondary-link { color: var(--blue-strong); border: 1px solid #c6d4ff; background: #fff; }
+    .secondary-link:hover { background: var(--blue-soft); }
+    .hero-summary {
+      position: relative;
+      z-index: 1;
+      padding: 24px;
+      border: 1px solid #cddafb;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.9);
+    }
+    .hero-summary h2 { margin-bottom: 16px; font-size: 16px; }
+    .summary-row {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 11px;
+      align-items: start;
+      padding: 11px 0;
+      border-top: 1px solid var(--line);
+    }
+    .summary-row:first-of-type { border-top: 0; }
+    .summary-number {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border-radius: 9px;
+      color: var(--blue-strong);
+      background: var(--blue-soft);
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .summary-row strong { display: block; color: var(--navy); font-size: 13px; }
+    .summary-row span { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+    .section { margin-top: 66px; }
+    .section-heading {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+    .section-heading h2 {
+      margin-bottom: 6px;
+      color: var(--navy);
+      font-size: clamp(28px, 3vw, 40px);
+      line-height: 1.1;
+      letter-spacing: -0.035em;
+    }
+    .section-heading p { max-width: 700px; margin-bottom: 0; color: var(--muted); }
+    .section-kicker { color: var(--blue-strong); font-size: 12px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
+
+    .concept {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 48px minmax(0, 1fr) 48px minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+    }
+    .concept-card {
+      min-height: 180px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: 0 8px 26px rgba(35, 66, 116, 0.06);
+    }
+    .concept-icon {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      margin-bottom: 17px;
+      place-items: center;
+      border-radius: 13px;
+      color: var(--blue-strong);
+      background: var(--blue-soft);
+      font-size: 20px;
+    }
+    .concept-card h3 { margin-bottom: 6px; color: var(--navy); font-size: 17px; }
+    .concept-card p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+    .concept-arrow { color: #94a8c8; font-size: 26px; text-align: center; }
+
+    .flow-board {
+      position: relative;
+      padding: 28px;
+      border-radius: 24px;
+      background: var(--navy);
+      box-shadow: var(--shadow);
+    }
+    .flow-board::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-radius: inherit;
+      background: radial-gradient(circle at 18% 0%, rgba(23, 109, 246, 0.26), transparent 35%);
+    }
+    .flow {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(9, minmax(110px, 1fr));
+      gap: 10px;
+      overflow-x: auto;
+      padding: 6px 2px 10px;
+    }
+    .flow-step {
+      position: relative;
+      min-height: 134px;
+      padding: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 16px;
+      color: #fff;
+      background: rgba(255, 255, 255, 0.07);
+      text-align: left;
+    }
+    .flow-step:hover, .flow-step.active { border-color: rgba(128, 172, 255, 0.8); background: rgba(23, 109, 246, 0.25); }
+    .flow-step::after {
+      content: "›";
+      position: absolute;
+      right: -9px;
+      top: 50%;
+      z-index: 3;
+      color: #8cb5ff;
+      font-size: 22px;
+      transform: translateY(-50%);
+    }
+    .flow-step:last-child::after { display: none; }
+    .flow-step small { display: block; margin-bottom: 18px; color: #8fb7ff; font-size: 10px; font-weight: 900; letter-spacing: 0.12em; }
+    .flow-step strong { display: block; margin-bottom: 5px; font-size: 13px; }
+    .flow-step span { display: block; color: #aebbd0; font-size: 11px; line-height: 1.45; }
+
+    .stage-list { display: grid; gap: 18px; }
+    .stage-card {
+      display: grid;
+      grid-template-columns: 82px minmax(0, 1fr);
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--surface);
+      box-shadow: 0 8px 30px rgba(35, 66, 116, 0.055);
+    }
+    .stage-number {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--blue-strong);
+      background: linear-gradient(180deg, var(--blue-soft), #f8faff);
+      font-size: 26px;
+      font-weight: 900;
+    }
+    .stage-content { padding: 26px 28px; }
+    .stage-title-row {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 16px;
+    }
+    .stage-title-row h3 { margin-bottom: 4px; color: var(--navy); font-size: 22px; letter-spacing: -0.02em; }
+    .stage-title-row p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+    .output-chip {
+      flex: 0 0 auto;
+      padding: 7px 10px;
+      border-radius: 10px;
+      color: var(--green);
+      background: var(--green-soft);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .stage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .reason-box {
+      padding: 17px;
+      border-radius: 15px;
+      background: var(--surface-alt);
+    }
+    .reason-box.why { border-left: 4px solid var(--blue); }
+    .reason-box.how { border-left: 4px solid var(--green); }
+    .reason-box strong { display: block; margin-bottom: 6px; color: var(--navy); font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; }
+    .reason-box p { margin-bottom: 0; color: var(--muted); font-size: 13px; }
+    .file-links { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }
+    .file-link {
+      padding: 6px 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: #475c7a;
+      background: #fff;
+      font-family: var(--mono);
+      font-size: 11px;
+      text-decoration: none;
+    }
+    .file-link:hover { color: var(--blue-strong); border-color: #aebfff; background: var(--blue-soft); }
+
+    .score-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 0.68fr); gap: 20px; }
+    .panel { padding: 26px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 30px rgba(35, 66, 116, 0.05); }
+    .panel h3 { margin-bottom: 6px; color: var(--navy); font-size: 18px; }
+    .panel-intro { margin-bottom: 22px; color: var(--muted); font-size: 13px; }
+    .weight-row { display: grid; grid-template-columns: 120px 1fr 45px; gap: 12px; align-items: center; margin: 16px 0; }
+    .weight-row strong { color: var(--text); font-size: 13px; }
+    .weight-track { height: 11px; overflow: hidden; border-radius: 99px; background: #e9eef6; }
+    .weight-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--blue), #6d91ff); }
+    .weight-value { color: var(--blue-strong); font-size: 12px; font-weight: 900; text-align: right; }
+    .gate-list { display: grid; gap: 10px; }
+    .gate {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 10px;
+      padding: 11px;
+      border-radius: 12px;
+      background: var(--surface-alt);
+    }
+    .gate-check { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 8px; color: var(--green); background: var(--green-soft); font-size: 12px; font-weight: 900; }
+    .gate strong { display: block; color: var(--text); font-size: 12px; }
+    .gate span { display: block; color: var(--muted); font-size: 11px; }
+
+    .outcomes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; }
+    .outcome { padding: 20px; border: 1px solid var(--line); border-radius: 17px; background: var(--surface); }
+    .outcome-dot { width: 10px; height: 10px; margin-bottom: 16px; border-radius: 50%; }
+    .outcome h3 { margin-bottom: 5px; color: var(--navy); font-size: 15px; }
+    .outcome p { margin-bottom: 0; color: var(--muted); font-size: 12px; }
+    .outcome.matched .outcome-dot { background: var(--green); box-shadow: 0 0 0 7px var(--green-soft); }
+    .outcome.review .outcome-dot { background: var(--blue); box-shadow: 0 0 0 7px var(--blue-soft); }
+    .outcome.unmatched .outcome-dot { background: var(--amber); box-shadow: 0 0 0 7px var(--amber-soft); }
+    .outcome.failed .outcome-dot { background: var(--red); box-shadow: 0 0 0 7px var(--red-soft); }
+
+    .scenario {
+      display: grid;
+      grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
+      gap: 18px;
+    }
+    .receipt-card, .candidate-card {
+      padding: 25px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .receipt-card { border-top: 4px solid var(--blue); }
+    .candidate-card { border-top: 4px solid var(--purple); }
+    .card-label { margin-bottom: 15px; color: var(--blue-strong); font-size: 11px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; }
+    .data-table { display: grid; gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: var(--line); }
+    .data-row { display: grid; grid-template-columns: 105px 1fr; gap: 12px; padding: 10px 12px; background: var(--surface); font-size: 12px; }
+    .data-row span:first-child { color: var(--muted); }
+    .data-row span:last-child { color: var(--text); font-weight: 700; }
+    .candidate-list { display: grid; gap: 10px; }
+    .candidate {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 15px;
+      align-items: center;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--surface-alt);
+    }
+    .candidate strong { display: block; color: var(--navy); font-size: 13px; }
+    .candidate span { color: var(--muted); font-size: 11px; }
+    .candidate-score { color: var(--blue-strong); font-size: 18px; font-weight: 900; }
+    .decision-note { margin-top: 13px; padding: 13px; border-radius: 13px; color: #5b479f; background: var(--purple-soft); font-size: 12px; }
+
+    .lifecycle {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      align-items: center;
+    }
+    .state {
+      min-height: 104px;
+      display: grid;
+      place-items: center;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: var(--surface);
+      text-align: center;
+    }
+    .state strong { color: var(--navy); font-size: 12px; }
+    .state span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .state-arrow { color: #96a8c2; text-align: center; }
+    .state.end-green { border-color: #a9e5cf; background: var(--green-soft); }
+    .state.end-blue { border-color: #b8cbff; background: var(--blue-soft); }
+    .state.end-amber { border-color: #f1d4a3; background: var(--amber-soft); }
+    .state.end-red { border-color: #f2b8c4; background: var(--red-soft); }
+
+    .file-tools {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 17px;
+    }
+    .search-wrap { position: relative; flex: 1 1 320px; }
+    .search-wrap input {
+      width: 100%;
+      min-height: 44px;
+      padding: 10px 14px 10px 40px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: var(--text);
+      background: var(--surface);
+    }
+    .search-wrap::before { content: "⌕"; position: absolute; left: 15px; top: 7px; color: var(--muted); font-size: 22px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 7px; }
+    .filter {
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      color: var(--muted);
+      background: var(--surface);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .filter:hover, .filter.active { color: var(--blue-strong); border-color: #b9c9ff; background: var(--blue-soft); }
+    .file-groups { display: grid; gap: 12px; }
+    .file-group {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 17px;
+      background: var(--surface);
+    }
+    .file-group summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 20px;
+      color: var(--navy);
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+      list-style: none;
+    }
+    .file-group summary::-webkit-details-marker { display: none; }
+    .file-group summary::after { content: "+"; color: var(--blue-strong); font-size: 20px; }
+    .file-group[open] summary::after { content: "−"; }
+    .file-count { color: var(--muted); font-size: 11px; font-weight: 700; }
+    .file-list { border-top: 1px solid var(--line); }
+    .file-row {
+      display: grid;
+      grid-template-columns: minmax(230px, 0.8fr) minmax(0, 1.3fr) minmax(0, 1.4fr);
+      gap: 16px;
+      padding: 15px 20px;
+      border-top: 1px solid #edf1f7;
+    }
+    .file-row:first-child { border-top: 0; }
+    .file-row code { color: var(--blue-strong); font-size: 11px; font-weight: 800; overflow-wrap: anywhere; }
+    .file-row p { margin-bottom: 0; color: var(--muted); font-size: 12px; }
+    .file-row p strong { color: var(--text); }
+    .empty-files { display: none; padding: 28px; border: 1px dashed #bdcbe0; border-radius: 16px; color: var(--muted); background: var(--surface); text-align: center; }
+
+    .why-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+    .why-card { padding: 20px; border: 1px solid var(--line); border-radius: 17px; background: var(--surface); }
+    .why-card .mini { color: var(--blue-strong); font-size: 11px; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase; }
+    .why-card h3 { margin: 8px 0 7px; color: var(--navy); font-size: 16px; }
+    .why-card p { margin-bottom: 0; color: var(--muted); font-size: 12px; }
+
+    .commands { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+    .command { overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+    .command h3 { margin: 0; padding: 14px 16px; border-bottom: 1px solid var(--line); color: var(--navy); font-size: 13px; }
+    .command pre { min-height: 95px; margin: 0; padding: 16px; color: #dce8ff; background: #0b1930; font-size: 11px; line-height: 1.7; white-space: pre-wrap; }
+
+    .callout {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 14px;
+      align-items: start;
+      margin-top: 24px;
+      padding: 20px;
+      border: 1px solid #c1cff9;
+      border-radius: 17px;
+      background: var(--blue-soft);
+    }
+    .callout-icon { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 12px; color: #fff; background: var(--blue-strong); font-weight: 900; }
+    .callout strong { display: block; margin-bottom: 3px; color: var(--navy); }
+    .callout p { margin-bottom: 0; color: #4e6589; font-size: 13px; }
+
+    footer { margin-top: 70px; padding-top: 26px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    footer strong { color: var(--navy); }
+    .back-top { float: right; color: var(--blue-strong); font-weight: 800; text-decoration: none; }
+
+    @media (max-width: 1050px) {
+      .nav { display: none; }
+      .hero { grid-template-columns: 1fr; }
+      .hero-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+      .hero-summary h2 { grid-column: 1 / -1; }
+      .summary-row { border-top: 0; padding: 8px; border-radius: 12px; background: var(--surface-alt); }
+      .concept { grid-template-columns: 1fr; }
+      .concept-arrow { transform: rotate(90deg); }
+      .score-layout, .scenario { grid-template-columns: 1fr; }
+      .outcomes { grid-template-columns: repeat(2, 1fr); }
+      .why-grid, .commands { grid-template-columns: repeat(2, 1fr); }
+      .file-row { grid-template-columns: 210px 1fr; }
+      .file-row p:last-child { grid-column: 2; }
+    }
+
+    @media (max-width: 720px) {
+      .topbar-inner, .shell { width: min(100% - 24px, 1240px); }
+      .brand-divider, .brand-label, .top-actions .print-button { display: none; }
+      .brand img { width: 104px; }
+      .hero { padding: 28px 22px; border-radius: 21px; }
+      .hero-summary { display: block; }
+      .summary-row { margin-top: 7px; }
+      .section { margin-top: 50px; }
+      .section-heading { align-items: start; flex-direction: column; }
+      .flow-board { padding: 18px; }
+      .stage-card { grid-template-columns: 54px minmax(0, 1fr); }
+      .stage-number { font-size: 19px; }
+      .stage-content { padding: 20px 17px; }
+      .stage-title-row { flex-direction: column; }
+      .stage-grid { grid-template-columns: 1fr; }
+      .outcomes, .why-grid, .commands { grid-template-columns: 1fr; }
+      .lifecycle { grid-template-columns: 1fr; }
+      .state-arrow { transform: rotate(90deg); }
+      .file-tools { display: block; }
+      .filters { margin-top: 10px; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 5px; }
+      .filter { flex: 0 0 auto; }
+      .file-row { grid-template-columns: 1fr; gap: 6px; }
+      .file-row p:last-child { grid-column: auto; }
+      .weight-row { grid-template-columns: 90px 1fr 38px; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      .topbar, .hero-actions, .file-tools, .back-top { display: none; }
+      .shell { width: 100%; padding: 0; }
+      .hero, .panel, .stage-card, .concept-card, .file-group { box-shadow: none; break-inside: avoid; }
+      .file-group { break-inside: auto; }
+      .file-group > .file-list { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#top" aria-label="Darb codebase guide home">
+        <img src="../public/darb-logo.png" alt="Darb">
+        <span class="brand-divider" aria-hidden="true"></span>
+        <span class="brand-label">Engineering guide</span>
+      </a>
+      <nav class="nav" aria-label="Guide sections">
+        <a href="#overview">Goal</a>
+        <a href="#journey">Pipeline</a>
+        <a href="#scoring">Scoring</a>
+        <a href="#example">Example</a>
+        <a href="#files">Files</a>
+        <a href="#decisions">Decisions</a>
+      </nav>
+      <div class="top-actions">
+        <button class="icon-button print-button" type="button" onclick="window.print()">Print guide</button>
+        <a class="icon-button" href="../README.md">README</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell" id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <p class="eyebrow">Darb receipt intelligence</p>
+        <h1 id="hero-title">How the full codebase works</h1>
+        <p class="hero-copy">
+          This system takes a <strong>receipt or tax invoice</strong>, finds the card transactions it is allowed to inspect,
+          ranks the plausible matches, and either attaches the document safely or asks a finance reviewer to decide.
+        </p>
+        <div class="hero-actions">
+          <a class="primary-link" href="#journey">Walk through the pipeline ↓</a>
+          <a class="secondary-link" href="#files">Explore every file</a>
+        </div>
+      </div>
+      <aside class="hero-summary" aria-label="System summary">
+        <h2>Remember these three ideas</h2>
+        <div class="summary-row">
+          <span class="summary-number">1</span>
+          <div><strong>The payment already exists</strong><span>We match proof documents to existing transactions. We do not process payments.</span></div>
+        </div>
+        <div class="summary-row">
+          <span class="summary-number">2</span>
+          <div><strong>The score is explainable</strong><span>Amount, merchant, card, and date contribute visible evidence.</span></div>
+        </div>
+        <div class="summary-row">
+          <span class="summary-number">3</span>
+          <div><strong>Safety beats confidence</strong><span>A 100% candidate still goes to review when another candidate is equally good.</span></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section" id="overview">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">The business goal</span>
+          <h2>Connect evidence to money</h2>
+          <p>A driver or finance user sends a receipt after a card purchase. Darb must determine which transaction that document proves.</p>
+        </div>
+      </div>
+      <div class="concept">
+        <article class="concept-card">
+          <div class="concept-icon" aria-hidden="true">▤</div>
+          <h3>Incoming document</h3>
+          <p>An email PDF or WhatsApp image contains merchant, total, date, card digits, and identifiers.</p>
+        </article>
+        <div class="concept-arrow" aria-hidden="true">→</div>
+        <article class="concept-card">
+          <div class="concept-icon" aria-hidden="true">≋</div>
+          <h3>Existing transactions</h3>
+          <p>The database already contains card charges belonging to a client and, when available, a driver.</p>
+        </article>
+        <div class="concept-arrow" aria-hidden="true">→</div>
+        <article class="concept-card">
+          <div class="concept-icon" aria-hidden="true">✓</div>
+          <h3>Auditable decision</h3>
+          <p>The system auto-confirms safe matches and exposes ambiguous evidence to a human reviewer.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="journey">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">End-to-end journey</span>
+          <h2>Nine stages, one document</h2>
+          <p>Select a stage for its detailed explanation. Each stage shows how it works, why it exists, and the files that own it.</p>
+        </div>
+      </div>
+
+      <div class="flow-board" aria-label="Pipeline stage navigator">
+        <div class="flow">
+          <button class="flow-step active" type="button" data-target="stage-1"><small>01</small><strong>Receive</strong><span>Email or WhatsApp</span></button>
+          <button class="flow-step" type="button" data-target="stage-2"><small>02</small><strong>Validate</strong><span>Zod + HMAC</span></button>
+          <button class="flow-step" type="button" data-target="stage-3"><small>03</small><strong>Deduplicate</strong><span>Three identities</span></button>
+          <button class="flow-step" type="button" data-target="stage-4"><small>04</small><strong>Extract</strong><span>OCR interface + QR</span></button>
+          <button class="flow-step" type="button" data-target="stage-5"><small>05</small><strong>Scope</strong><span>Safe candidates</span></button>
+          <button class="flow-step" type="button" data-target="stage-6"><small>06</small><strong>Score</strong><span>Explainable engine</span></button>
+          <button class="flow-step" type="button" data-target="stage-7"><small>07</small><strong>Persist</strong><span>Lifecycle states</span></button>
+          <button class="flow-step" type="button" data-target="stage-8"><small>08</small><strong>Review</strong><span>Human decision</span></button>
+          <button class="flow-step" type="button" data-target="stage-9"><small>09</small><strong>Learn</strong><span>Evaluate + rematch</span></button>
+        </div>
+      </div>
+
+      <div class="stage-list" style="margin-top:18px">
+        <article class="stage-card" id="stage-1">
+          <div class="stage-number">01</div>
+          <div class="stage-content">
+            <div class="stage-title-row">
+              <div><h3>Receive the document</h3><p>The HTTP boundary turns provider events into a common ingestion input.</p></div>
+              <span class="output-chip">Output: file bytes + sender</span>
+            </div>
+            <div class="stage-grid">
+              <div class="reason-box how"><strong>How it works</strong><p>The email route decodes Base64 attachments. The WhatsApp route walks Meta's nested payload, loads the media ID through MediaStore, normalizes the phone, and sends both sources to ingestDocument().</p></div>
+              <div class="reason-box why"><strong>Why this design</strong><p>Provider-specific formats stop at the route. The rest of the system receives one consistent shape, so matching does not know or care whether a receipt came from email or WhatsApp.</p></div>
+            </div>
+            <div class="file-links"><a class="file-link" href="../app/api/webhooks/email/route.ts">email/route.ts</a><a class="file-link" href="../app/api/webhooks/whatsapp/route.ts">whatsapp/route.ts</a><a class="file-link" href="../lib/media/types.ts">media/types.ts</a></div>
+          </div>
+        </article>
+
+        <article class="stage-card" id="stage-2">
+          <div class="stage-number">02</div>
+          <div class="stage-content">
+            <div class="stage-title-row">
+              <div><h3>Validate and authenticate</h3><p>Untrusted network input is rejected before it reaches domain logic.</p></div>
+              <span class="output-chip">Output: typed payload</span>
+            </div>
+            <div class="stage-grid">
+              <div class="reason-box how"><strong>How it works</strong><p>The route keeps the raw body for HMAC-SHA256 verification, parses JSON once, then calls Zod safeParse(). Invalid emails, missing arrays, or non-image WhatsApp messages return HTTP 400.</p></div>
+              <div class="reason-box why"><strong>Why this design</strong><p>TypeScript disappears at runtime. Zod protects the real API boundary, while timingSafeEqual prevents a subtle signature comparison leak. The same schema also generates TypeScript types.</p></div>
+            </div>
+            <div class="file-links"><a class="file-link" href="../lib/webhooks/schemas.ts">webhooks/schemas.ts</a><a class="file-link" href="../lib/webhooks/signature.ts">webhooks/signature.ts</a></div>
+          </div>
+        </article>
+
+        <article class="stage-card" id="stage-3">
+          <div class="stage-number">03</div>
+          <div class="stage-content">
+            <div class="stage-title-row">
+              <div><h3>Detect redelivery and duplicate receipts</h3><p>The same evidence must not create multiple records or claims.</p></div>
+              <span class="output-chip">Output: new or existing document</span>
+            </div>
+            <div class="stage-grid">
+              <div class="reason-box how"><strong>How it works</strong><p>Ingestion checks provider ID, tenant-scoped SHA-256 content hash, and a semantic fingerprint built from authorization, invoice, or QR identity. Database unique constraints resolve concurrent redeliveries.</p></div>
+              <div class="reason-box why"><strong>Why this design</strong><p>A provider ID catches normal retries, a byte hash catches renamed files, and semantic identity catches scans or re-encodings. Tenant scoping prevents one client's receipt from suppressing another's.</p></div>
+            </div>
+            <div class="file-links"><a class="file-link" href="../lib/services/document-ingestion.ts">document-ingestion.ts</a><a class="file-link" href="../prisma/schema.prisma">schema.prisma</a></div>
+          </div>
+        </article>
+
+        <article class="stage-card" id="stage-4">
+          <div class="stage-number">04</div>
+          <div class="stage-content">
+            <div class="stage-title-row">
+              <div><h3>Extract structured receipt fields</h3><p>Unstructured document bytes become reliable matching evidence.</p></div>
+              <span class="output-chip">Output: ExtractedDocument</span>
+            </div>
+            <div class="stage-grid">
+              <div class="reason-box how"><strong>How it works</strong><p>DocumentExtractor exposes one async extract() contract. The assessment uses a deterministic hash-backed mock. ZATCA TLV QR fields fill missing seller, VAT, date, and total values without overwriting visible OCR.</p></div>
+              <div class="reason-box why"><strong>Why this design</strong><p>The interface makes real OCR replaceable while tests remain offline. Per-field confidence lets weak OCR reduce its own scoring influence. Extraction failures are persisted instead of crashing the webhook.</p></div>
+            </div>
+            <div class="file-links"><a class="file-link" href="../lib/extraction/types.ts">extraction/types.ts</a><a class="file-link" href="../lib/extraction/mock-extractor.ts">mock-extractor.ts</a><a class="file-link" href="../lib/extraction/zatca-qr.ts">zatca-qr.ts</a></div>
+          </div>
+        </article>
+
+        <article class="stage-card" id="stage-5">
+          <div class="stage-number">05</div>
+          <div class="stage-content">
+            <div class="stage-title-row">
+              <div><h3>Load only plausible, authorized transactions</h3><p>Candidate selection is both an access-control rule and a performance boundary.</p></div>
+              <span class="output-chip">Output: candidate block</span>
+            </div>
+            <div class="stage-grid">
+              <div class="reason-box how"><strong>How it works</strong><p>Email sender maps through ClientEmail to clientId. WhatsApp sender maps to driverPhone. A printed date adds a ±30-day database filter. Frequency values are calculated only inside this safe block.</p></div>
+              <div class="reason-box why"><strong>Why this design</strong><p>Scoring should never choose a transaction the sender is not allowed to see. Pre-filtering keeps tenancy outside the pure matcher and avoids comparing every receipt with the entire ledger.</p></div>
+            </div>
+            <div class="file-links"><a class="file-link" href="../lib/services/document-ingestion.ts">document-ingestion.ts</a><a class="file-link" href="../prisma/schema.prisma">schema.prisma</a></div>
+          </div>
+        </article>
+
+        <article class="stage-card" id="stage-6">
+          <div class="stage-number">06</div>
+          <div class="stage-content">
+            <div class="stage-title-row">
+              <div><h3>Score, rank, and handle ambiguity</h3><p>The matcher produces evidence, not a mysterious yes/no answer.</p></div>
+              <span class="output-chip">Output: ranked candidates</span>
+            </div>
+            <div class="stage-grid">
+              <div class="reason-box how"><strong>How it works</strong><p>scoreTransaction() combines amount, merchant, card, and Riyadh-local date. Missing signals are re-normalized. OCR reliability reduces weights. Strong identifier matches boost confidence; reliable contradictions penalize it.</p></div>
+              <div class="reason-box why"><strong>Why this design</strong><p>Finance needs to understand decisions. A pure deterministic function is easy to test, audit, and tune. An absolute threshold plus a runner-up gap handles the “two candidates at 100%” case correctly.</p></div>
+            </div>
+            <div class="file-links"><a class="file-link" href="../lib/services/transaction-matcher.ts">transaction-matcher.ts</a><a class="file-link" href="../__tests__/matcher-edge-matrix.test.ts">matcher-edge-matrix.test.ts</a></div>
+          </div>
+        </article>
+
+        <article class="stage-card" id="stage-7">
+          <div class="stage-number">07</div>
+          <div class="stage-content">
+            <div class="stage-title-row">
+              <div><h3>Persist one consistent lifecycle result</h3><p>Documents and relationships move together or not at all.</p></div>
+              <span class="output-chip">Output: terminal state</span>
+            </div>
+            <div class="stage-grid">
+              <div class="reason-box how"><strong>How it works</strong><p>A Prisma transaction writes the document status and DocumentMatch rows. Safe winners become AUTO_CONFIRMED; review cases save up to five CANDIDATE rows; low scores become UNMATCHED; extraction errors become FAILED.</p></div>
+              <div class="reason-box why"><strong>Why this design</strong><p>Transactions prevent half-written decisions. Raw SQL adds a partial unique index so a transaction can own only one CONFIRMED or AUTO_CONFIRMED document, even under races.</p></div>
+            </div>
+            <div class="file-links"><a class="file-link" href="../prisma/schema.prisma">schema.prisma</a><a class="file-link" href="../prisma/migrations/20260819000000_initial/migration.sql">initial migration</a></div>
+          </div>
+        </article>
+
+        <article class="stage-card" id="stage-8">
+          <div class="stage-number">08</div>
+          <div class="stage-content">
+            <div class="stage-title-row">
+              <div><h3>Let a human resolve uncertainty</h3><p>The reviewer sees both sides of the comparison and finalizes the relationship.</p></div>
+              <span class="output-chip">Output: confirmed or rejected</span>
+            </div>
+            <div class="stage-grid">
+              <div class="reason-box how"><strong>How it works</strong><p>The server page queries pending documents and candidate transactions. Match and Reject call Zod-validated server actions. Confirmation rejects siblings; rejecting the last candidate moves the document to UNMATCHED.</p></div>
+              <div class="reason-box why"><strong>Why this design</strong><p>The score never replaces judgment in ambiguous cases. Side-by-side fields, signal chips, conflicts, and tie labels show exactly what is being compared. Race-safe updates prevent stale reviewer clicks.</p></div>
+            </div>
+            <div class="file-links"><a class="file-link" href="../app/review/page.tsx">review/page.tsx</a><a class="file-link" href="../app/review/decision-buttons.tsx">decision-buttons.tsx</a><a class="file-link" href="../lib/services/review-service.ts">review-service.ts</a></div>
+          </div>
+        </article>
+
+        <article class="stage-card" id="stage-9">
+          <div class="stage-number">09</div>
+          <div class="stage-content">
+            <div class="stage-title-row">
+              <div><h3>Explain, rematch, and evaluate</h3><p>Supporting services improve operations without changing deterministic scoring.</p></div>
+              <span class="output-chip">Output: learning signals</span>
+            </div>
+            <div class="stage-grid">
+              <div class="reason-box how"><strong>How it works</strong><p>Explanations are generated only on click and cached by evidence hash. UNMATCHED documents can be rescored after new transactions arrive. Human-confirmed rows feed ranking, precision, coverage, and calibration metrics.</p></div>
+              <div class="reason-box why"><strong>Why this design</strong><p>LLM prose remains presentation-only. Rematching handles out-of-order events. Evaluation creates a responsible path from hand-chosen heuristics to thresholds supported by real reviewer labels.</p></div>
+            </div>
+            <div class="file-links"><a class="file-link" href="../lib/services/match-explanation.ts">match-explanation.ts</a><a class="file-link" href="../lib/services/rematch-unmatched.ts">rematch-unmatched.ts</a><a class="file-link" href="../lib/services/matcher-evaluation.ts">matcher-evaluation.ts</a></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="scoring">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Matching logic</span>
+          <h2>A high score is necessary, not sufficient</h2>
+          <p>The engine first ranks candidates, then applies separate safety gates before automation.</p>
+        </div>
+      </div>
+      <div class="score-layout">
+        <article class="panel">
+          <h3>Core signal weights</h3>
+          <p class="panel-intro">Available weights are re-normalized when a receipt genuinely lacks a field.</p>
+          <div class="weight-row"><strong>Amount</strong><div class="weight-track"><div class="weight-fill" style="width:100%"></div></div><span class="weight-value">30%</span></div>
+          <div class="weight-row"><strong>Merchant</strong><div class="weight-track"><div class="weight-fill" style="width:83.33%"></div></div><span class="weight-value">25%</span></div>
+          <div class="weight-row"><strong>Card last 4</strong><div class="weight-track"><div class="weight-fill" style="width:83.33%"></div></div><span class="weight-value">25%</span></div>
+          <div class="weight-row"><strong>Date</strong><div class="weight-track"><div class="weight-fill" style="width:66.67%"></div></div><span class="weight-value">20%</span></div>
+          <div class="callout">
+            <span class="callout-icon">i</span>
+            <div><strong>Confidence is a heuristic ranking score</strong><p>It is deliberately not presented as a statistically calibrated probability until enough human-labelled production data exists.</p></div>
+          </div>
+        </article>
+        <article class="panel">
+          <h3>Every auto-match gate must pass</h3>
+          <p class="panel-intro">Failing one gate sends the document to review, even when the displayed score is 100%.</p>
+          <div class="gate-list">
+            <div class="gate"><span class="gate-check">✓</span><div><strong>Top score ≥ 82%</strong><span>Strong absolute candidate</span></div></div>
+            <div class="gate"><span class="gate-check">✓</span><div><strong>Lead ≥ 12%</strong><span>Not tied with runner-up</span></div></div>
+            <div class="gate"><span class="gate-check">✓</span><div><strong>Evidence ≥ 70%</strong><span>Not a sparse perfect score</span></div></div>
+            <div class="gate"><span class="gate-check">✓</span><div><strong>At least 3 core signals</strong><span>Enough independent evidence</span></div></div>
+            <div class="gate"><span class="gate-check">✓</span><div><strong>No contradiction</strong><span>No reliable currency/card conflict</span></div></div>
+            <div class="gate"><span class="gate-check">✓</span><div><strong>No existing document</strong><span>One proof per transaction</span></div></div>
+          </div>
+        </article>
+      </div>
+
+      <div class="outcomes" style="margin-top:18px">
+        <article class="outcome matched"><div class="outcome-dot"></div><h3>MATCHED</h3><p>Safe winner was confirmed automatically or by a reviewer.</p></article>
+        <article class="outcome review"><div class="outcome-dot"></div><h3>NEEDS_REVIEW</h3><p>Plausible candidates exist, but automation gates did not all pass.</p></article>
+        <article class="outcome unmatched"><div class="outcome-dot"></div><h3>UNMATCHED</h3><p>No candidate reached the review threshold.</p></article>
+        <article class="outcome failed"><div class="outcome-dot"></div><h3>FAILED</h3><p>Extraction or pipeline work could not produce matchable evidence.</p></article>
+      </div>
+    </section>
+
+    <section class="section" id="metrics">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">After human labels exist</span>
+          <h2>Measure safety before increasing automation</h2>
+          <p>Reviewer-confirmed decisions become ground truth. Automatic matches never grade the same rules that created them.</p>
+        </div>
+      </div>
+      <div class="why-grid">
+        <article class="why-card"><span class="mini">Highest risk</span><h3>False positives</h3><p>An automatically attached transaction was wrong. Track the count, rate, merchant/source slices, and every corrected example.</p></article>
+        <article class="why-card"><span class="mini">Review cost</span><h3>False negatives</h3><p>A correct top candidate was unnecessarily withheld from automation. This measures safe work the engine missed.</p></article>
+        <article class="why-card"><span class="mini">Ranking</span><h3>Top-1 + Recall@K</h3><p>Measure whether the correct transaction ranked first and whether it appeared anywhere in the top 3 or 5 candidates.</p></article>
+        <article class="why-card"><span class="mini">Automation</span><h3>Precision, recall, coverage</h3><p>Precision protects money; recall and coverage show how much correct work is automated; review rate shows operator load.</p></article>
+        <article class="why-card"><span class="mini">Trust</span><h3>Calibration</h3><p>Brier score and expected calibration error show whether a displayed score agrees with observed correctness.</p></article>
+        <article class="why-card"><span class="mini">Operations</span><h3>Latency, failures, queue age</h3><p>Track p50/p95/p99 latency, terminal states by reason code, extraction failures, dedupe rate, and time to human decision.</p></article>
+      </div>
+      <div class="callout" style="margin-top:18px">
+        <span class="callout-icon">!</span>
+        <div><strong>Optimize in the right order</strong><p>First protect automatic-match precision and false-positive rate. Only then lower review workload. Always tune on one period and report results on a separate held-out period.</p></div>
+      </div>
+    </section>
+
+    <section class="section" id="example">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Concrete example</span>
+          <h2>Why a 100% score can still need review</h2>
+          <p>The Alfanar fixture intentionally creates two transactions with identical visible evidence.</p>
+        </div>
+      </div>
+      <div class="scenario">
+        <article class="receipt-card">
+          <p class="card-label">Extracted receipt</p>
+          <div class="data-table">
+            <div class="data-row"><span>Merchant</span><span>ALFANAR FUEL STATION</span></div>
+            <div class="data-row"><span>Amount</span><span>250.00 SAR</span></div>
+            <div class="data-row"><span>Date</span><span>Jun 14, 2025</span></div>
+            <div class="data-row"><span>Card</span><span>Not printed</span></div>
+          </div>
+        </article>
+        <article class="candidate-card">
+          <p class="card-label">Scoped candidate transactions</p>
+          <div class="candidate-list">
+            <div class="candidate"><div><strong>Transaction A — ALFANAR FUEL ST 04 RUH</strong><span>250 SAR · Jun 14 · 11:15 · Card 4411</span></div><span class="candidate-score">100%</span></div>
+            <div class="candidate"><div><strong>Transaction B — ALFANAR FUEL ST 04 RUH</strong><span>250 SAR · Jun 14 · 12:32 · Card 4411</span></div><span class="candidate-score">100%</span></div>
+          </div>
+          <div class="decision-note"><strong>Decision: NEEDS_REVIEW.</strong> Both candidates are equally strong, so the top-score gap is 0%. The engine refuses to choose arbitrarily.</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="lifecycle">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Data lifecycle</span>
+          <h2>Every document ends in an explicit state</h2>
+          <p>Intermediate states make failures visible; terminal states make operations and reporting predictable.</p>
+        </div>
+      </div>
+      <div class="lifecycle" aria-label="Document state lifecycle">
+        <div class="state"><div><strong>RECEIVED</strong><span>Row exists</span></div></div>
+        <div class="state-arrow">→</div>
+        <div class="state"><div><strong>EXTRACTED</strong><span>Fields stored</span></div></div>
+        <div class="state-arrow">→</div>
+        <div style="display:grid;gap:7px">
+          <div class="state end-green"><div><strong>MATCHED</strong><span>Attached safely</span></div></div>
+          <div class="state end-blue"><div><strong>NEEDS_REVIEW</strong><span>Human decision</span></div></div>
+        </div>
+        <div style="display:grid;gap:7px">
+          <div class="state end-amber"><div><strong>UNMATCHED</strong><span>No plausible candidate</span></div></div>
+          <div class="state end-red"><div><strong>FAILED</strong><span>Needs pipeline attention</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="files">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Code map</span>
+          <h2>Find any file and understand it</h2>
+          <p>Search by filename, behavior, or concept. “How” describes the mechanism inside the file.</p>
+        </div>
+      </div>
+      <div class="file-tools">
+        <label class="search-wrap">
+          <span style="position:absolute;clip:rect(0 0 0 0)">Search files</span>
+          <input id="file-search" type="search" placeholder="Search: matcher, Zod, database, explanation…">
+        </label>
+        <div class="filters" aria-label="Filter files">
+          <button class="filter active" type="button" data-filter="all">All</button>
+          <button class="filter" type="button" data-filter="web">Web</button>
+          <button class="filter" type="button" data-filter="domain">Domain</button>
+          <button class="filter" type="button" data-filter="data">Data</button>
+          <button class="filter" type="button" data-filter="test">Tests</button>
+          <button class="filter" type="button" data-filter="support">Support</button>
+        </div>
+      </div>
+
+      <div class="file-groups" id="file-groups">
+        <details class="file-group" data-category="web" open>
+          <summary><span>Application and interface</span><span class="file-count">8 files</span></summary>
+          <div class="file-list">
+            <div class="file-row" data-search="app layout metadata root html css"><code>app/layout.tsx</code><p><strong>Purpose:</strong> Root page shell and metadata.</p><p><strong>How:</strong> Wraps every route in the shared html/body structure and imports global CSS.</p></div>
+            <div class="file-row" data-search="app page redirect review"><code>app/page.tsx</code><p><strong>Purpose:</strong> Home entry point.</p><p><strong>How:</strong> Calls Next.js redirect('/review') immediately.</p></div>
+            <div class="file-row" data-search="review page dashboard prisma candidates comparison"><code>app/review/page.tsx</code><p><strong>Purpose:</strong> Finance review dashboard.</p><p><strong>How:</strong> Queries four document states in parallel, ranks review priority, parses evidence, and renders receipt-versus-transaction comparisons.</p></div>
+            <div class="file-row" data-search="decision buttons match reject client action loading"><code>app/review/decision-buttons.tsx</code><p><strong>Purpose:</strong> Match and Reject controls.</p><p><strong>How:</strong> Uses useTransition(), calls server actions, disables during work, and renders domain errors.</p></div>
+            <div class="file-row" data-search="candidate explanation openai local click cache client"><code>app/review/candidate-explanation.tsx</code><p><strong>Purpose:</strong> On-demand explanation UI.</p><p><strong>How:</strong> Calls explainMatch only after a click and stores the returned text/provider in React state.</p></div>
+            <div class="file-row" data-search="email webhook route zod base64 attachments hmac"><code>app/api/webhooks/email/route.ts</code><p><strong>Purpose:</strong> Email ingestion boundary.</p><p><strong>How:</strong> Verifies raw body, validates JSON, decodes each Base64 attachment, and isolates per-file failures.</p></div>
+            <div class="file-row" data-search="whatsapp webhook meta route media messages hmac"><code>app/api/webhooks/whatsapp/route.ts</code><p><strong>Purpose:</strong> WhatsApp ingestion boundary.</p><p><strong>How:</strong> Validates nested Meta messages, loads fixture media IDs, normalizes phones, and ingests each image independently.</p></div>
+            <div class="file-row" data-search="global css tailwind theme design"><code>app/globals.css</code><p><strong>Purpose:</strong> Global visual foundation.</p><p><strong>How:</strong> Imports Tailwind/shadcn and defines design tokens, typography, radii, borders, and dark colors.</p></div>
+          </div>
+        </details>
+
+        <details class="file-group" data-category="domain" open>
+          <summary><span>Domain services</span><span class="file-count">8 files</span></summary>
+          <div class="file-list">
+            <div class="file-row" data-search="document ingestion pipeline dedupe candidates persist"><code>lib/services/document-ingestion.ts</code><p><strong>Purpose:</strong> End-to-end orchestration.</p><p><strong>How:</strong> Resolves owner, deduplicates, extracts, gates quality, scopes candidates, calls matcher, and persists one outcome.</p></div>
+            <div class="file-row" data-search="transaction matcher weights amount date merchant card scoring"><code>lib/services/transaction-matcher.ts</code><p><strong>Purpose:</strong> Pure matching engine.</p><p><strong>How:</strong> Scores available evidence, applies OCR reliability and contradictions, ranks candidates, then checks automation gates.</p></div>
+            <div class="file-row" data-search="review service confirm reject race transaction"><code>lib/services/review-service.ts</code><p><strong>Purpose:</strong> Final human decisions.</p><p><strong>How:</strong> Uses transactional conditional updates, rejects siblings, changes document state, and enforces one proof per transaction.</p></div>
+            <div class="file-row" data-search="match explanation openai llm local cache privacy"><code>lib/services/match-explanation.ts</code><p><strong>Purpose:</strong> Reviewer-friendly prose.</p><p><strong>How:</strong> Derives privacy-safe triggers, hashes evidence, calls OpenAI or local fallback, validates text, and caches the result.</p></div>
+            <div class="file-row" data-search="rematch unmatched late transaction global assignment"><code>lib/services/rematch-unmatched.ts</code><p><strong>Purpose:</strong> Handle documents arriving first.</p><p><strong>How:</strong> Rebuilds candidates for UNMATCHED rows, scores them, globally assigns transactions, and promotes results.</p></div>
+            <div class="file-row" data-search="global assignment hungarian one to one"><code>lib/services/global-assignment.ts</code><p><strong>Purpose:</strong> One-to-one batch allocation.</p><p><strong>How:</strong> Builds a score matrix with dummy columns and runs a maximum-weight Hungarian algorithm.</p></div>
+            <div class="file-row" data-search="matcher evaluation accuracy precision calibration brier"><code>lib/services/matcher-evaluation.ts</code><p><strong>Purpose:</strong> Measure matcher quality.</p><p><strong>How:</strong> Calculates ranking, automation, and calibration metrics and fits an isotonic calibrator.</p></div>
+            <div class="file-row" data-search="document status reason history unmatched failed diagnostics"><code>lib/services/document-status-reason.ts</code><p><strong>Purpose:</strong> Explain lifecycle outcomes.</p><p><strong>How:</strong> Converts stable reason codes and persisted JSON diagnostics into reviewer-friendly titles, descriptions, and facts.</p></div>
+          </div>
+        </details>
+
+        <details class="file-group" data-category="domain">
+          <summary><span>Extraction, media, validation, and actions</span><span class="file-count">10 files</span></summary>
+          <div class="file-list">
+            <div class="file-row" data-search="extraction types interface contract ocr"><code>lib/extraction/types.ts</code><p><strong>Purpose:</strong> OCR contract.</p><p><strong>How:</strong> Defines ExtractedDocument and the async DocumentExtractor interface.</p></div>
+            <div class="file-row" data-search="mock extractor fixtures hash ocr"><code>lib/extraction/mock-extractor.ts</code><p><strong>Purpose:</strong> Deterministic assessment OCR.</p><p><strong>How:</strong> Hashes fixture files and returns the extraction mapped to the incoming byte hash.</p></div>
+            <div class="file-row" data-search="zatca qr tlv saudi vat"><code>lib/extraction/zatca-qr.ts</code><p><strong>Purpose:</strong> Saudi QR enrichment.</p><p><strong>How:</strong> Decodes Base64 TLV tags and fills only missing OCR fields at high source reliability.</p></div>
+            <div class="file-row" data-search="media types interface whatsapp"><code>lib/media/types.ts</code><p><strong>Purpose:</strong> Media retrieval seam.</p><p><strong>How:</strong> Defines get(mediaId), hiding whether bytes come from fixtures, Meta, or storage.</p></div>
+            <div class="file-row" data-search="fixture media store whatsapp local"><code>lib/media/fixture-media-store.ts</code><p><strong>Purpose:</strong> Local WhatsApp media.</p><p><strong>How:</strong> Maps known media IDs to fixture paths and reads their bytes asynchronously.</p></div>
+            <div class="file-row" data-search="zod schemas email whatsapp validation"><code>lib/webhooks/schemas.ts</code><p><strong>Purpose:</strong> Runtime payload validation.</p><p><strong>How:</strong> Uses nested Zod objects/arrays/literals and infers matching TypeScript types.</p></div>
+            <div class="file-row" data-search="signature hmac sha256 timing safe security"><code>lib/webhooks/signature.ts</code><p><strong>Purpose:</strong> Webhook authenticity.</p><p><strong>How:</strong> Recomputes HMAC from the raw body and compares equal-length buffers with timingSafeEqual().</p></div>
+            <div class="file-row" data-search="handler utils singleton extractor media response"><code>lib/webhooks/handler-utils.ts</code><p><strong>Purpose:</strong> Shared route wiring.</p><p><strong>How:</strong> Lazily caches extractor/media implementations and standardizes JSON responses.</p></div>
+            <div class="file-row" data-search="server actions review zod revalidate"><code>lib/actions/review.ts</code><p><strong>Purpose:</strong> Browser-to-domain bridge.</p><p><strong>How:</strong> Validates positive match IDs, calls review/explanation services, and revalidates /review.</p></div>
+            <div class="file-row" data-search="safe action client errors logging"><code>lib/actions/safe-action-client.ts</code><p><strong>Purpose:</strong> Action error policy.</p><p><strong>How:</strong> Logs server stacks and returns a controlled message to client components.</p></div>
+          </div>
+        </details>
+
+        <details class="file-group" data-category="data">
+          <summary><span>Database and migrations</span><span class="file-count">9 files</span></summary>
+          <div class="file-list">
+            <div class="file-row" data-search="prisma schema client transaction document match enums"><code>prisma/schema.prisma</code><p><strong>Purpose:</strong> Domain data model.</p><p><strong>How:</strong> Defines relations, states, indexes, uniqueness, extraction evidence, decisions, and explanations.</p></div>
+            <div class="file-row" data-search="prisma seed demo clients transactions fixtures"><code>prisma/seed.ts</code><p><strong>Purpose:</strong> Reproducible demo data.</p><p><strong>How:</strong> Resets dev rows, creates 2 clients/17 transactions, and sends 10 fixtures through real ingestion.</p></div>
+            <div class="file-row" data-search="prisma client singleton sqlite adapter"><code>lib/prisma.ts</code><p><strong>Purpose:</strong> Shared database client.</p><p><strong>How:</strong> Creates Prisma with the SQLite adapter and caches it globally during development reloads.</p></div>
+            <div class="file-row" data-search="initial migration tables partial unique index"><code>prisma/migrations/20260819000000_initial/migration.sql</code><p><strong>Purpose:</strong> Initial database.</p><p><strong>How:</strong> Creates tables, foreign keys, indexes, and the partial one-confirmed-document constraint.</p></div>
+            <div class="file-row" data-search="matching hardening migration identifiers evidence owner"><code>…/20260819010000_matching_hardening/migration.sql</code><p><strong>Purpose:</strong> Stronger matching model.</p><p><strong>How:</strong> Adds identifiers, owner scope, evidence coverage, contradictions, rank, and safer unique indexes.</p></div>
+            <div class="file-row" data-search="semantic dedup migration fingerprint"><code>…/20260819020000_semantic_dedup/migration.sql</code><p><strong>Purpose:</strong> Content-independent dedupe.</p><p><strong>How:</strong> Adds semanticFingerprint and tenant-scoped uniqueness.</p></div>
+            <div class="file-row" data-search="review reason migration audit"><code>…/20260819030000_review_reason/migration.sql</code><p><strong>Purpose:</strong> Explain queue entry.</p><p><strong>How:</strong> Adds the reviewReason column.</p></div>
+            <div class="file-row" data-search="explanation migration openai cache"><code>…/20260820000000_match_explanations/migration.sql</code><p><strong>Purpose:</strong> Persist explanation audits.</p><p><strong>How:</strong> Adds text, evidence hash, provider, model, prompt version, and generation time.</p></div>
+            <div class="file-row" data-search="status reason details migration history diagnostics"><code>…/20260821000000_status_reasons/migration.sql</code><p><strong>Purpose:</strong> Persist auditable outcome reasons.</p><p><strong>How:</strong> Adds stable reason codes and JSON diagnostics, then safely labels older terminal records as legacy outcomes.</p></div>
+          </div>
+        </details>
+
+        <details class="file-group" data-category="test">
+          <summary><span>Automated tests</span><span class="file-count">15 files</span></summary>
+          <div class="file-list">
+            <div class="file-row" data-search="matcher tests outcomes edge"><code>__tests__/matcher.test.ts</code><p><strong>Purpose:</strong> Core matching behavior.</p><p><strong>How:</strong> Builds plain document/transaction objects and asserts ranking, gates, contradictions, and trimming.</p></div>
+            <div class="file-row" data-search="matcher edge matrix 51 boundaries"><code>__tests__/matcher-edge-matrix.test.ts</code><p><strong>Purpose:</strong> Boundary coverage.</p><p><strong>How:</strong> Exercises 51 amount/date/merchant/reliability/identifier/outcome cases without database overhead.</p></div>
+            <div class="file-row" data-search="normalization merchant amount date phone"><code>__tests__/normalization.test.ts</code><p><strong>Purpose:</strong> Scoring helper correctness.</p><p><strong>How:</strong> Uses messy Arabic/Latin merchant strings and precise amount/date/phone examples.</p></div>
+            <div class="file-row" data-search="ingestion tests dedupe isolation scope"><code>__tests__/ingestion.test.ts</code><p><strong>Purpose:</strong> Pipeline integration.</p><p><strong>How:</strong> Uses real Prisma and mock extractors to assert persistence, dedupe, timeout/failure, and tenant isolation.</p></div>
+            <div class="file-row" data-search="review service tests confirm reject uniqueness"><code>__tests__/review-service.test.ts</code><p><strong>Purpose:</strong> Decision invariants.</p><p><strong>How:</strong> Creates candidate rows, calls transactional services, and checks statuses, siblings, replay, and uniqueness.</p></div>
+            <div class="file-row" data-search="rematch late transaction test"><code>__tests__/rematch.test.ts</code><p><strong>Purpose:</strong> Out-of-order arrival.</p><p><strong>How:</strong> Ingests an orphan, adds its transaction, runs rematching, and asserts promotion.</p></div>
+            <div class="file-row" data-search="global assignment hungarian test"><code>__tests__/global-assignment.test.ts</code><p><strong>Purpose:</strong> One-to-one optimization.</p><p><strong>How:</strong> Proves the global optimum beats greedy selection and allows unmatched documents.</p></div>
+            <div class="file-row" data-search="evaluation metrics calibration test"><code>__tests__/matcher-evaluation.test.ts</code><p><strong>Purpose:</strong> Metric correctness.</p><p><strong>How:</strong> Supplies labelled predictions and checks accuracy, threshold choice, and isotonic calibration.</p></div>
+            <div class="file-row" data-search="explanation tests cache local"><code>__tests__/match-explanation.test.ts</code><p><strong>Purpose:</strong> Explanation behavior.</p><p><strong>How:</strong> Checks trigger wording, click-time generation, evidence-hash reuse, and invalidation.</p></div>
+            <div class="file-row" data-search="document status reason unmatched failed history"><code>__tests__/document-status-reason.test.ts</code><p><strong>Purpose:</strong> Outcome explanation correctness.</p><p><strong>How:</strong> Checks weak-score facts, stored failure messages, and safe fallback behavior for legacy records.</p></div>
+            <div class="file-row" data-search="signature hmac tests"><code>__tests__/signature.test.ts</code><p><strong>Purpose:</strong> Signature verification.</p><p><strong>How:</strong> Tests disabled, missing, valid, prefixed, wrong-length, and mismatched signatures.</p></div>
+            <div class="file-row" data-search="zatca qr tlv test"><code>__tests__/zatca-qr.test.ts</code><p><strong>Purpose:</strong> QR extraction.</p><p><strong>How:</strong> Builds TLV payloads and asserts decoded fields plus non-overwriting enrichment.</p></div>
+            <div class="file-row" data-search="global setup test database migrations"><code>__tests__/global-setup.ts</code><p><strong>Purpose:</strong> Clean test database.</p><p><strong>How:</strong> Deletes test.db and applies every committed migration before workers start.</p></div>
+            <div class="file-row" data-search="jest setup database url"><code>__tests__/jest-setup.ts</code><p><strong>Purpose:</strong> Test isolation.</p><p><strong>How:</strong> Points DATABASE_URL at test.db before Prisma is imported.</p></div>
+            <div class="file-row" data-search="test helpers database seed reset"><code>__tests__/helpers/db.ts</code><p><strong>Purpose:</strong> Reusable test arrangements.</p><p><strong>How:</strong> Deletes rows in FK-safe order and creates a minimal two-client transaction dataset.</p></div>
+          </div>
+        </details>
+
+        <details class="file-group" data-category="support">
+          <summary><span>Fixtures, scripts, UI primitives, and configuration</span><span class="file-count">Grouped support files</span></summary>
+          <div class="file-list">
+            <div class="file-row" data-search="fixtures documents receipt scenarios"><code>fixtures/documents/*.txt</code><p><strong>Purpose:</strong> Known receipt scenarios.</p><p><strong>How:</strong> Exact bytes key the mock OCR and represent ties, tips, missing dates, branches, currency conflict, duplicates, orphan, and failure.</p></div>
+            <div class="file-row" data-search="webhook payload fixtures curl http"><code>fixtures/webhook-payloads/*</code><p><strong>Purpose:</strong> Runnable webhook examples.</p><p><strong>How:</strong> JSON payloads feed the routes; fire-all.sh uses curl; requests.http supports editor HTTP clients.</p></div>
+            <div class="file-row" data-search="ui components button badge table tabs tooltip"><code>components/ui/*.tsx</code><p><strong>Purpose:</strong> Reusable UI building blocks.</p><p><strong>How:</strong> Base UI + shadcn primitives combine typed props with reusable Tailwind variants.</p></div>
+            <div class="file-row" data-search="package scripts dependencies"><code>package.json</code><p><strong>Purpose:</strong> Project operations.</p><p><strong>How:</strong> Pins dependencies and exposes demo, webhook, database, test, check, build, and evaluation commands.</p></div>
+            <div class="file-row" data-search="readme setup usage"><code>README.md</code><p><strong>Purpose:</strong> Reviewer quick start.</p><p><strong>How:</strong> Documents clone-to-demo, webhook, environment, test, and command workflows.</p></div>
+            <div class="file-row" data-search="implementation decisions assumptions tradeoffs"><code>IMPLEMENTATION.md</code><p><strong>Purpose:</strong> Engineering rationale.</p><p><strong>How:</strong> Records architecture, scoring decisions, assumptions, trade-offs, bonus design, and future work.</p></div>
+            <div class="file-row" data-search="sqlite init migration script"><code>scripts/ensure-sqlite-db.mjs</code><p><strong>Purpose:</strong> Fresh-clone SQLite setup.</p><p><strong>How:</strong> Resolves file: URLs, creates parent directories, and touches the DB before Prisma migrate deploy.</p></div>
+            <div class="file-row" data-search="evaluate matcher script labels"><code>scripts/evaluate-matcher.ts</code><p><strong>Purpose:</strong> Offline evaluation command.</p><p><strong>How:</strong> Reads only human-confirmed decisions, derives predictions, prints metrics, and warns on insufficient labels.</p></div>
+            <div class="file-row" data-search="prisma config database migrations seed"><code>prisma.config.ts</code><p><strong>Purpose:</strong> Prisma CLI configuration.</p><p><strong>How:</strong> Points Prisma at schema/migrations/seed and defaults to local SQLite without a private .env.</p></div>
+            <div class="file-row" data-search="config typescript jest eslint next postcss components github ci"><code>*.config.* + .github/workflows/ci.yml</code><p><strong>Purpose:</strong> Build quality and automation.</p><p><strong>How:</strong> Enforces strict TS, Next linting, isolated Jest DB setup, Tailwind processing, and clean CI verification.</p></div>
+            <div class="file-row" data-search="generated prisma client types"><code>lib/generated/prisma/**</code><p><strong>Purpose:</strong> Generated typed database API.</p><p><strong>How:</strong> Prisma generates it from schema.prisma during npm install; it must not be edited manually.</p></div>
+            <div class="file-row" data-search="public assets logo svg favicon"><code>public/* + app/favicon.ico</code><p><strong>Purpose:</strong> Static branding assets.</p><p><strong>How:</strong> Next serves public files directly; the review header uses darb-logo.png.</p></div>
+          </div>
+        </details>
+      </div>
+      <div class="empty-files" id="empty-files">No files match that search. Try “matcher”, “Zod”, “review”, or “database”.</div>
+    </section>
+
+    <section class="section" id="decisions">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Why this architecture</span>
+          <h2>Key engineering choices</h2>
+          <p>The implementation optimizes for correctness, explainability, clean assessment setup, and a realistic path to production.</p>
+        </div>
+      </div>
+      <div class="why-grid">
+        <article class="why-card"><span class="mini">Purity</span><h3>Scoping outside matching</h3><p>Tenant authorization stays in ingestion. The matcher remains a pure function that can be tested with plain objects.</p></article>
+        <article class="why-card"><span class="mini">Money safety</span><h3>Integer halalas</h3><p>Amounts never use floating-point currency math. SAR 250.00 is stored as 25,000 halalas.</p></article>
+        <article class="why-card"><span class="mini">Ambiguity</span><h3>Threshold + score gap</h3><p>A strong candidate is not enough; it must also be clearly stronger than the runner-up.</p></article>
+        <article class="why-card"><span class="mini">Reliability</span><h3>Database constraints</h3><p>Unique indexes—not optimistic application checks—are the final defense against duplicates and conflicting confirmations.</p></article>
+        <article class="why-card"><span class="mini">Replaceability</span><h3>OCR and media interfaces</h3><p>Fixtures keep the assessment deterministic, while interfaces define where real provider implementations plug in.</p></article>
+        <article class="why-card"><span class="mini">AI boundary</span><h3>LLM explains, never decides</h3><p>The deterministic matcher owns the outcome. Optional generated prose only translates stored evidence for a reviewer.</p></article>
+      </div>
+    </section>
+
+    <section class="section" id="limitations">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Honest boundaries</span>
+          <h2>Assessment-ready, not production-complete</h2>
+          <p>The architecture exposes the right seams, but these integrations deliberately remain outside the take-home scope.</p>
+        </div>
+      </div>
+      <div class="why-grid">
+        <article class="why-card"><span class="mini">Mocked</span><h3>Real OCR and Meta media</h3><p>Current implementations recognize repository fixtures. Production classes would call OCR and WhatsApp APIs behind the existing interfaces.</p></article>
+        <article class="why-card"><span class="mini">Not wired</span><h3>Transaction ingestion trigger</h3><p>rematchUnmatched() exists, but no real card-feed endpoint calls it when a transaction arrives.</p></article>
+        <article class="why-card"><span class="mini">Future</span><h3>Queues, auth, and document preview</h3><p>Production should add authenticated reviewers, durable background jobs, blob storage, and original PDF/image preview.</p></article>
+      </div>
+    </section>
+
+    <section class="section" id="commands">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Run it yourself</span>
+          <h2>Three useful workflows</h2>
+          <p>All setup defaults to local SQLite and requires no external service.</p>
+        </div>
+      </div>
+      <div class="commands">
+        <article class="command"><h3>Populated UI demo</h3><pre>npm install
+npm run demo
+
+# Open:
+http://localhost:3000/review</pre></article>
+        <article class="command"><h3>Webhook demonstration</h3><pre># Terminal 1
+npm run webhooks:setup
+npm run dev
+
+# Terminal 2
+npm run webhooks:fire</pre></article>
+        <article class="command"><h3>Submission verification</h3><pre>npm run verify
+
+# Runs:
+# 153 tests
+# ESLint + TypeScript
+# Production build</pre></article>
+      </div>
+    </section>
+
+    <footer>
+      <a class="back-top" href="#top">Back to top ↑</a>
+      <strong>Darb engineering guide.</strong> Start with document-ingestion.ts, transaction-matcher.ts, and schema.prisma—the three files that explain most of the assessment.
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      var steps = Array.prototype.slice.call(document.querySelectorAll(".flow-step"));
+      steps.forEach(function (step) {
+        step.addEventListener("click", function () {
+          var target = document.getElementById(step.getAttribute("data-target"));
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
+
+      var stageObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          steps.forEach(function (step) {
+            step.classList.toggle("active", step.getAttribute("data-target") === entry.target.id);
+          });
+        });
+      }, { rootMargin: "-28% 0px -62% 0px", threshold: 0 });
+      document.querySelectorAll(".stage-card").forEach(function (stage) { stageObserver.observe(stage); });
+
+      var search = document.getElementById("file-search");
+      var filters = Array.prototype.slice.call(document.querySelectorAll(".filter"));
+      var groups = Array.prototype.slice.call(document.querySelectorAll(".file-group"));
+      var empty = document.getElementById("empty-files");
+      var activeFilter = "all";
+
+      function updateFiles() {
+        var query = search.value.trim().toLowerCase();
+        var totalVisible = 0;
+        groups.forEach(function (group) {
+          var categoryMatch = activeFilter === "all" || group.getAttribute("data-category") === activeFilter;
+          var rows = Array.prototype.slice.call(group.querySelectorAll(".file-row"));
+          var groupVisible = 0;
+          rows.forEach(function (row) {
+            var text = (row.textContent + " " + (row.getAttribute("data-search") || "")).toLowerCase();
+            var visible = categoryMatch && (!query || text.indexOf(query) !== -1);
+            row.hidden = !visible;
+            if (visible) groupVisible += 1;
+          });
+          group.hidden = groupVisible === 0;
+          if (groupVisible > 0 && query) group.open = true;
+          totalVisible += groupVisible;
+        });
+        empty.style.display = totalVisible === 0 ? "block" : "none";
+      }
+
+      search.addEventListener("input", updateFiles);
+      filters.forEach(function (filter) {
+        filter.addEventListener("click", function () {
+          activeFilter = filter.getAttribute("data-filter");
+          filters.forEach(function (item) {
+            item.classList.toggle("active", item === filter);
+            item.setAttribute("aria-pressed", item === filter ? "true" : "false");
+          });
+          updateFiles();
+        });
+      });
+
+      var navLinks = Array.prototype.slice.call(document.querySelectorAll(".nav a"));
+      var navTargets = navLinks.map(function (link) { return document.querySelector(link.getAttribute("href")); }).filter(Boolean);
+      var navObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          navLinks.forEach(function (link) {
+            link.classList.toggle("active", link.getAttribute("href") === "#" + entry.target.id);
+          });
+        });
+      }, { rootMargin: "-35% 0px -60% 0px", threshold: 0 });
+      navTargets.forEach(function (target) { navObserver.observe(target); });
+
+      // The checked-in HTML also opens directly from docs/. On GitHub Pages,
+      // keep the logo local to the deployment and send source links to the
+      // repository's main branch instead of producing broken Pages URLs.
+      if (window.location.hostname.endsWith("github.io")) {
+        var hostedLogo = document.querySelector(".brand img");
+        if (hostedLogo) hostedLogo.setAttribute("src", "./darb-logo.png");
+        document.querySelectorAll('a[href^="../"]').forEach(function (link) {
+          var path = link.getAttribute("href").replace(/^\.\.\//, "");
+          link.setAttribute("href", "https://github.com/mhmdn1/darbpay-ocr-matching/blob/main/" + path);
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

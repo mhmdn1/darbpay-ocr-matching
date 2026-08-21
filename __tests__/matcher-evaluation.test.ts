@@ -21,7 +21,29 @@ describe('matcher evaluation', () => {
     expect(metrics.recallAtK[3]).toBe(0.75);
     expect(metrics.autoPrecision).toBe(1);
     expect(metrics.autoCoverage).toBe(0.5);
+    expect(metrics.reviewRate).toBe(0.5);
+    expect(metrics.truePositives).toBe(2);
+    expect(metrics.falsePositives).toBe(0);
+    expect(metrics.trueNegatives).toBe(2);
+    expect(metrics.falseNegatives).toBe(0);
+    expect(metrics.falsePositiveRate).toBe(0);
+    expect(metrics.falseNegativeRate).toBe(0);
+    expect(metrics.autoRecall).toBe(1);
     expect(metrics.brierScore).toBeGreaterThan(0);
+  });
+
+  test('reports false automatic matches and missed safe automation separately', () => {
+    const metrics = evaluateMatcher([
+      { score: 0.95, correct: false, autoMatched: true, rankOfCorrect: 2 },
+      { score: 0.85, correct: true, autoMatched: false, rankOfCorrect: 1 },
+      { score: 0.30, correct: false, autoMatched: false, rankOfCorrect: null },
+    ]);
+    expect(metrics.falsePositives).toBe(1);
+    expect(metrics.falseNegatives).toBe(1);
+    expect(metrics.falsePositiveRate).toBe(0.5);
+    expect(metrics.falseNegativeRate).toBe(1);
+    expect(metrics.autoPrecision).toBe(0);
+    expect(metrics.autoRecall).toBe(0);
   });
 
   test('selects a threshold meeting the requested precision', () => {

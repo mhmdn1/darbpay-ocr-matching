@@ -1,5 +1,6 @@
 import prisma from '@/lib/prisma';
 import { log } from '@/lib/logger';
+import { serializeStatusDetails, STATUS_REASON } from '@/lib/services/document-status-reason';
 
 const CONFIRMED_STATUSES = ['CONFIRMED', 'AUTO_CONFIRMED'] as const;
 
@@ -79,7 +80,11 @@ export async function confirmMatchTx(matchId: number, decidedBy: string): Promis
 
     await tx.document.update({
       where: { id: match.documentId },
-      data: { status: 'MATCHED' },
+      data: {
+        status: 'MATCHED',
+        statusReason: STATUS_REASON.HUMAN_CONFIRMED,
+        statusDetails: serializeStatusDetails({ topScore: match.confidence }),
+      },
     });
 
     log.info('match confirmed', { matchId, documentId: match.documentId });
@@ -131,9 +136,16 @@ export async function rejectMatchTx(matchId: number, decidedBy: string): Promise
     let documentStatus = 'NEEDS_REVIEW';
     if (remaining === 0) {
       documentStatus = 'UNMATCHED';
+      const rejectedCandidateCount = await tx.documentMatch.count({
+        where: { documentId: match.documentId, status: 'REJECTED' },
+      });
       await tx.document.update({
         where: { id: match.documentId },
-        data: { status: 'UNMATCHED' },
+        data: {
+          status: 'UNMATCHED',
+          statusReason: STATUS_REASON.ALL_CANDIDATES_REJECTED,
+          statusDetails: serializeStatusDetails({ rejectedCandidateCount, remainingCandidateCount: 0 }),
+        },
       });
     }
 

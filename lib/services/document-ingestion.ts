@@ -4,12 +4,17 @@ import type { PrismaClient } from '@/lib/generated/prisma/client';
 import type { DocumentExtractor, ExtractedDocument } from '@/lib/extraction/types';
 import { enrichWithZatcaQr } from '@/lib/extraction/zatca-qr';
 import {
+  MATCHER_CONFIG,
   matchDocument,
   normalizeMerchant,
   type CandidateTransaction,
   type MatchResult,
 } from '@/lib/services/transaction-matcher';
 import { log } from '@/lib/logger';
+import {
+  serializeStatusDetails,
+  STATUS_REASON,
+} from '@/lib/services/document-status-reason';
 
 export type IngestionSource = 'EMAIL' | 'WHATSAPP';
 
@@ -117,7 +122,12 @@ export async function ingestDocument(
     log.error('extraction threw', { documentId: doc.id, message });
     await db.document.update({
       where: { id: doc.id },
-      data: { status: 'FAILED', errorMessage: `extraction: ${message}` },
+      data: {
+        status: 'FAILED',
+        statusReason: STATUS_REASON.EXTRACTION_ERROR,
+        statusDetails: serializeStatusDetails({ errorStage: 'extraction' }),
+        errorMessage: `extraction: ${message}`,
+      },
     });
     return {
       documentId: doc.id,
@@ -186,6 +196,11 @@ export async function ingestDocument(
       where: { id: doc.id },
       data: {
         status: 'FAILED',
+        statusReason: STATUS_REASON.LOW_QUALITY_EXTRACTION,
+        statusDetails: serializeStatusDetails({
+          extractionConfidence: extracted.extractionConfidence,
+          errorStage: 'extraction',
+        }),
         errorMessage: `low-quality extraction (confidence=${extracted.extractionConfidence})`,
       },
     });
@@ -212,7 +227,12 @@ export async function ingestDocument(
     log.error('candidate load failed', { documentId: doc.id, message });
     await db.document.update({
       where: { id: doc.id },
-      data: { status: 'FAILED', errorMessage: `scoping: ${message}` },
+      data: {
+        status: 'FAILED',
+        statusReason: STATUS_REASON.CANDIDATE_SCOPING_ERROR,
+        statusDetails: serializeStatusDetails({ errorStage: 'scoping' }),
+        errorMessage: `scoping: ${message}`,
+      },
     });
     return {
       documentId: doc.id,
@@ -276,7 +296,12 @@ export async function ingestDocument(
       try {
         await db.document.update({
           where: { id: documentId },
-          data: { status: 'FAILED', errorMessage: `pipeline: ${message}` },
+          data: {
+            status: 'FAILED',
+            statusReason: STATUS_REASON.PIPELINE_ERROR,
+            statusDetails: serializeStatusDetails({ errorStage: 'pipeline' }),
+            errorMessage: `pipeline: ${message}`,
+          },
         });
       } catch (markFailedError) {
         log.error('failed to mark document as FAILED', {
@@ -357,7 +382,22 @@ async function persistMatchResult(
   autoMatchAuditRate = 0.02,
 ): Promise<IngestionResult> {
   if (result.outcome === 'UNMATCHED') {
-    await db.document.update({ where: { id: documentId }, data: { status: 'UNMATCHED' } });
+    const diagnostics = result.diagnostics;
+    await db.document.update({
+      where: { id: documentId },
+      data: {
+        status: 'UNMATCHED',
+        statusReason: diagnostics?.reason ?? STATUS_REASON.NO_CANDIDATE_ABOVE_DISPLAY_THRESHOLD,
+        statusDetails: serializeStatusDetails(diagnostics),
+      },
+    });
+    log.info('matcher decision', {
+      documentId,
+      outcome: result.outcome,
+      reason: diagnostics?.reason,
+      scopedCandidateCount: diagnostics?.scopedCandidateCount,
+      topScore: diagnostics?.topScore,
+    });
     return { documentId, status: 'UNMATCHED', outcome: 'UNMATCHED', candidateCount: 0 };
   }
 
@@ -392,7 +432,10 @@ async function persistMatchResult(
           decidedAt: new Date(),
         },
       });
-      await tx.document.update({ where: { id: documentId }, data: { status: 'MATCHED' } });
+      await tx.document.update({
+        where: { id: documentId },
+        data: { status: 'MATCHED', statusReason: STATUS_REASON.AUTO_MATCHED, statusDetails: null },
+      });
     } else {
       // NEEDS_REVIEW: persist all ranked candidates as CANDIDATE for the review UI.
       for (const [index, c] of result.candidates.entries()) {
@@ -411,7 +454,17 @@ async function persistMatchResult(
       }
       await tx.document.update({
         where: { id: documentId },
-        data: { status: 'NEEDS_REVIEW', reviewReason: isAuditSample ? 'AUTO_MATCH_AUDIT' : 'AMBIGUOUS_MATCH' },
+        data: {
+          status: 'NEEDS_REVIEW',
+          reviewReason: isAuditSample ? STATUS_REASON.AUTO_MATCH_AUDIT : STATUS_REASON.AMBIGUOUS_MATCH,
+          statusReason: isAuditSample ? STATUS_REASON.AUTO_MATCH_AUDIT : STATUS_REASON.AMBIGUOUS_MATCH,
+          statusDetails: serializeStatusDetails({
+            scopedCandidateCount: result.candidates.length,
+            displayedCandidateCount: result.candidates.length,
+            topScore: result.candidates[0]?.confidence ?? null,
+            reviewThreshold: MATCHER_CONFIG.thresholds.review,
+          }),
+        },
       });
     }
   });

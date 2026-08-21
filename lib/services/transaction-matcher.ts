@@ -64,6 +64,16 @@ export interface MatchCandidate {
 export interface MatchResult {
   outcome: MatchOutcome;
   candidates: MatchCandidate[];
+  diagnostics?: MatchDiagnostics;
+}
+
+export interface MatchDiagnostics {
+  reason: 'NO_SCOPED_TRANSACTIONS' | 'NO_CANDIDATE_ABOVE_DISPLAY_THRESHOLD' | 'TOP_SCORE_BELOW_REVIEW_THRESHOLD';
+  scopedCandidateCount: number;
+  displayedCandidateCount: number;
+  topScore: number | null;
+  displayThreshold: number;
+  reviewThreshold: number;
 }
 
 export const MATCHER_CONFIG = {
@@ -88,17 +98,45 @@ export const MATCHER_CONFIG = {
 } as const;
 
 export function matchDocument(doc: ExtractedFields, transactions: CandidateTransaction[]): MatchResult {
-  if (transactions.length === 0) return { outcome: 'UNMATCHED', candidates: [] };
+  if (transactions.length === 0) {
+    return {
+      outcome: 'UNMATCHED',
+      candidates: [],
+      diagnostics: unmatchedDiagnostics('NO_SCOPED_TRANSACTIONS', 0, 0, null),
+    };
+  }
 
-  const scored = transactions
+  const allScored = transactions
     .map((tx) => scoreTransaction(doc, tx))
+    .sort((a, b) => b.confidence - a.confidence || a.transactionId - b.transactionId);
+  const scored = allScored
     .filter((candidate) => candidate.confidence >= MATCHER_CONFIG.thresholds.candidateDisplay)
-    .sort((a, b) => b.confidence - a.confidence || a.transactionId - b.transactionId)
     .slice(0, MATCHER_CONFIG.maxCandidates);
 
   const top = scored[0];
-  if (!top || top.confidence < MATCHER_CONFIG.thresholds.review) {
-    return { outcome: 'UNMATCHED', candidates: [] };
+  if (!top) {
+    return {
+      outcome: 'UNMATCHED',
+      candidates: [],
+      diagnostics: unmatchedDiagnostics(
+        'NO_CANDIDATE_ABOVE_DISPLAY_THRESHOLD',
+        transactions.length,
+        0,
+        allScored[0]?.confidence ?? null,
+      ),
+    };
+  }
+  if (top.confidence < MATCHER_CONFIG.thresholds.review) {
+    return {
+      outcome: 'UNMATCHED',
+      candidates: [],
+      diagnostics: unmatchedDiagnostics(
+        'TOP_SCORE_BELOW_REVIEW_THRESHOLD',
+        transactions.length,
+        scored.length,
+        top.confidence,
+      ),
+    };
   }
 
   const second = scored[1];
@@ -114,6 +152,22 @@ export function matchDocument(doc: ExtractedFields, transactions: CandidateTrans
     !topTx.hasConfirmedDocument;
 
   return { outcome: canAutoMatch ? 'AUTO_MATCHED' : 'NEEDS_REVIEW', candidates: scored };
+}
+
+function unmatchedDiagnostics(
+  reason: MatchDiagnostics['reason'],
+  scopedCandidateCount: number,
+  displayedCandidateCount: number,
+  topScore: number | null,
+): MatchDiagnostics {
+  return {
+    reason,
+    scopedCandidateCount,
+    displayedCandidateCount,
+    topScore,
+    displayThreshold: MATCHER_CONFIG.thresholds.candidateDisplay,
+    reviewThreshold: MATCHER_CONFIG.thresholds.review,
+  };
 }
 
 export function scoreTransaction(doc: ExtractedFields, tx: CandidateTransaction): MatchCandidate {

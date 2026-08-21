@@ -3,10 +3,12 @@ import Image from 'next/image';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { format } from 'date-fns';
-import { AlertCircle, ArrowUpRight, CheckCircle2, Clock3, FileSearch, Inbox, Mail, MessageCircle, ReceiptText, ShieldCheck } from 'lucide-react';
+import { AlertCircle, ArrowUpRight, CheckCircle2, ChevronDown, CircleHelp, Clock3, FileSearch, Inbox, Mail, MessageCircle, ReceiptText, ShieldCheck } from 'lucide-react';
 import { DecisionButtons } from './decision-buttons';
 import { MATCHER_CONFIG } from '@/lib/services/transaction-matcher';
 import { CandidateExplanation } from './candidate-explanation';
+import { explainDocumentStatus } from '@/lib/services/document-status-reason';
+import { MatchStatus } from '@/lib/generated/prisma/enums';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,6 +30,9 @@ interface CandidateRow {
   rank: number | null;
   explanation: string | null;
   explanationProvider: string | null;
+  matchStatus: string;
+  decidedBy: string | null;
+  decidedAt: Date | null;
 }
 
 interface DocRow {
@@ -48,6 +53,8 @@ interface DocRow {
   receivedAt: Date;
   errorMessage: string | null;
   reviewReason: string | null;
+  statusReason: string | null;
+  statusDetails: string | null;
   candidates: CandidateRow[];
 }
 
@@ -57,14 +64,21 @@ function formatMoney(minor: number | null, currency: string | null): string {
 }
 
 async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 'FAILED'): Promise<DocRow[]> {
+  const visibleMatchStatuses: MatchStatus[] = status === 'NEEDS_REVIEW'
+    ? [MatchStatus.CANDIDATE]
+    : status === 'MATCHED'
+      ? [MatchStatus.CONFIRMED, MatchStatus.AUTO_CONFIRMED]
+      : status === 'UNMATCHED'
+        ? [MatchStatus.REJECTED]
+        : [];
   const docs = await prisma.document.findMany({
     where: { status },
     orderBy: { receivedAt: 'desc' },
     include: {
       matches: {
-        // Only undecided rows are actionable. Keeping REJECTED siblings in
-        // this list leaves stale Match/Reject buttons after revalidation.
-        where: { status: 'CANDIDATE' },
+        // Review cards need actionable candidates; history needs the final
+        // confirmed/rejected relationship so it can explain the outcome.
+        where: { status: { in: visibleMatchStatuses } },
         include: { transaction: true },
         orderBy: [{ confidence: 'desc' }, { rank: 'asc' }],
       },
@@ -89,8 +103,10 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
     receivedAt: d.receivedAt,
     errorMessage: d.errorMessage,
     reviewReason: d.reviewReason,
+    statusReason: d.statusReason,
+    statusDetails: d.statusDetails,
     candidates: d.matches
-      .filter((m) => m.confidence >= MATCHER_CONFIG.thresholds.candidateDisplay)
+      .filter((m) => status !== 'NEEDS_REVIEW' || m.confidence >= MATCHER_CONFIG.thresholds.candidateDisplay)
       .map((m) => ({
       matchId: m.id,
       transactionId: m.transactionId,
@@ -109,6 +125,9 @@ async function loadDocuments(status: 'NEEDS_REVIEW' | 'MATCHED' | 'UNMATCHED' | 
       rank: m.rank,
       explanation: m.explanation,
       explanationProvider: m.explanationProvider,
+      matchStatus: m.status,
+      decidedBy: m.decidedBy,
+      decidedAt: m.decidedAt,
       })),
   }));
   return status === 'NEEDS_REVIEW'
@@ -225,6 +244,7 @@ export default async function ReviewPage() {
                 <TableHead>Merchant</TableHead>
                 <TableHead>Amount</TableHead>
                 <TableHead>Received</TableHead>
+                <TableHead className="pr-5">Outcome</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -236,11 +256,12 @@ export default async function ReviewPage() {
                   <TableCell>{d.merchantName ?? '—'}</TableCell>
                   <TableCell className="font-medium">{formatMoney(d.totalAmount, d.currency)}</TableCell>
                   <TableCell className="text-xs text-slate-500">{format(d.receivedAt, 'MMM d, yyyy · HH:mm')}</TableCell>
+                  <TableCell className="whitespace-normal pr-5"><OutcomeDetails doc={d} /></TableCell>
                 </TableRow>
               ))}
               {matched.length + unmatched.length + failed.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-10 text-center text-sm text-slate-500">
+                  <TableCell colSpan={7} className="py-10 text-center text-sm text-slate-500">
                     Nothing here yet — fire a webhook to ingest a document.
                   </TableCell>
                 </TableRow>
@@ -251,6 +272,42 @@ export default async function ReviewPage() {
       </section>
       </main>
     </div>
+  );
+}
+
+function OutcomeDetails({ doc }: { doc: DocRow }) {
+  const explanation = explainDocumentStatus(doc);
+  const relatedMatch = doc.candidates[0];
+  return (
+    <details className="group min-w-[260px] max-w-sm">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:border-[#b9c9ff] hover:bg-[#f7f9ff]">
+        <span className="inline-flex items-center gap-2">
+          <CircleHelp className="size-3.5 shrink-0 text-[#3157d5]" />
+          {explanation.title}
+        </span>
+        <ChevronDown className="size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600 shadow-sm">
+        <p>{explanation.description}</p>
+        {relatedMatch && (
+          <div className="rounded-md bg-[#f5f7ff] p-2 text-slate-700">
+            <p className="font-semibold">Transaction #{relatedMatch.transactionId} · {relatedMatch.merchantName}</p>
+            <p>{formatMoney(relatedMatch.amount, relatedMatch.currency)} · score {Math.round(relatedMatch.confidence * 100)}%</p>
+            {relatedMatch.decidedBy && <p>Decision by: {relatedMatch.decidedBy}</p>}
+          </div>
+        )}
+        {explanation.facts.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {explanation.facts.map((fact) => (
+              <span key={fact} className="rounded-md bg-slate-100 px-2 py-1 font-medium text-slate-600">{fact}</span>
+            ))}
+          </div>
+        )}
+        <p className="font-mono text-[10px] uppercase tracking-wide text-slate-400">
+          Reason code: {doc.statusReason ?? doc.reviewReason ?? 'NOT_RECORDED'}
+        </p>
+      </div>
+    </details>
   );
 }
 

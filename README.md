@@ -8,6 +8,11 @@ matches are auto-attached; ambiguous ones land in a review queue.
 Implementation notes and design rationale live in
 [`IMPLEMENTATION.md`](IMPLEMENTATION.md).
 
+The visual, stage-by-stage walkthrough is published at
+[mhmdn1.github.io/darbpay-ocr-matching](https://mhmdn1.github.io/darbpay-ocr-matching/).
+Its editable source is [`docs/codebase-guide.html`](docs/codebase-guide.html);
+updates pushed to `main` are published automatically.
+
 ## Reviewer quick start
 
 No API key, Docker container, database server, or private `.env` file is
@@ -251,7 +256,7 @@ prisma/
 fixtures/
   documents/                      sample and demo document files
   webhook-payloads/               ready-to-fire JSON payloads + curl script + .http file
-__tests__/                        149 unit and integration tests
+__tests__/                        153 unit and integration tests
 ```
 
 ## Handy scripts

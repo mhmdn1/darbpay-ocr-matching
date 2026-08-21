@@ -7,11 +7,12 @@
 4. [Data model](#data-model)
 5. [Pipeline / ingestion](#pipeline--ingestion)
 6. [Review actions](#review-actions)
-7. [Assumptions](#assumptions)
-8. [Trade-offs](#trade-offs)
-9. [Bonus features implemented](#bonus-features-implemented)
-10. [Design sketch: multi-transaction invoice](#design-sketch-multi-transaction-invoice)
-11. [What I would improve with more time](#what-i-would-improve-with-more-time)
+7. [Evaluation and operational metrics](#evaluation-and-operational-metrics)
+8. [Assumptions](#assumptions)
+9. [Trade-offs](#trade-offs)
+10. [Bonus features implemented](#bonus-features-implemented)
+11. [Design sketch: multi-transaction invoice](#design-sketch-multi-transaction-invoice)
+12. [What I would improve with more time](#what-i-would-improve-with-more-time)
 
 ## Architecture at a glance
 
@@ -195,7 +196,11 @@ See [`prisma/schema.prisma`](prisma/schema.prisma). Notable choices:
   `updatedAt`, strong identifiers, semantic fingerprint, and per-field OCR
   confidence. `DocumentMatch` persists rank, evidence coverage, contradictions,
   and an optional cached on-demand explanation with its evidence hash, provider,
-  model, prompt version, and generation timestamp for auditability.
+  model, prompt version, and generation timestamp for auditability. `statusReason`
+  stores a stable lifecycle code while `statusDetails` stores JSON diagnostics
+  such as best score, thresholds, transactions checked, rejection count, and
+  extraction confidence. Processing History renders both as a human-readable
+  “why” disclosure without inventing a reason in the UI.
 
 ## Pipeline / ingestion
 
@@ -247,7 +252,9 @@ persistence.
 - **Sibling auto-reject**: confirming a match auto-rejects the other
   CANDIDATE matches on the same document (they lost).
 - **Document status transitions**: confirm → MATCHED; reject with no
-  remaining candidates → UNMATCHED.
+  remaining candidates → UNMATCHED. Both transitions persist a stable reason;
+  an unmatched record can therefore distinguish weak scoring from explicit
+  human rejection.
 - **On-demand candidate explanations**: no explanation is generated during
   ingestion, scoring, or page rendering. The reviewer must click **Explain
   match**. The server re-reads the trusted match row, sends only sanitized
@@ -257,6 +264,37 @@ persistence.
   provider failure), the same action uses a deterministic local explainer so
   the assessment remains fully runnable offline. The explanation never changes
   a score or decision; it is presentation only.
+
+## Evaluation and operational metrics
+
+Human-confirmed decisions are the source of truth. Automatic matches must not
+grade the same model that created them. `npm run matcher:evaluate` currently
+reports the following offline metrics from reviewer-labelled examples:
+
+| Metric | Why it matters |
+|---|---|
+| Top-1 accuracy | How often the first-ranked candidate is the transaction the reviewer confirms. |
+| Recall@1 / @3 / @5 | Whether the correct transaction appears anywhere in the candidate list. |
+| True / false positives | Safe automatic matches versus incorrect automatic attachments. False positives are the highest-risk error. |
+| True / false negatives | Correctly withheld weak matches versus safe matches unnecessarily sent to review. |
+| Auto precision / recall | Correctness of automation and how much safe work it captures. |
+| Auto coverage / review rate | Operational trade-off between automation and reviewer workload. |
+| Brier score / calibration error | Whether displayed confidence tracks observed correctness. |
+
+Production telemetry should additionally aggregate these dimensions without
+logging raw OCR text or card data:
+
+- document count by terminal status and `statusReason`;
+- webhook dedupe rate and failure rate by pipeline stage;
+- extraction and end-to-end latency at p50, p95, and p99;
+- candidate-block size, top score, runner-up gap, evidence coverage, and contradiction rate;
+- review queue age, time-to-decision, rejection rate, and correction rate;
+- metrics sliced by source, document type, merchant category, score band, and
+  model/rules version to detect drift and poorly served cohorts.
+
+Alert primarily on false automatic matches, precision below the agreed safety
+target, sudden extraction failures, growing queue age, and material calibration
+drift. Optimize review rate only after correctness is stable.
 
 ## Assumptions
 

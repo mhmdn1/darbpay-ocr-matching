@@ -9,8 +9,16 @@ export interface EvaluationMetrics {
   examples: number;
   top1Accuracy: number;
   recallAtK: Record<number, number>;
+  truePositives: number;
+  falsePositives: number;
+  trueNegatives: number;
+  falseNegatives: number;
+  falsePositiveRate: number;
+  falseNegativeRate: number;
   autoCoverage: number;
+  reviewRate: number;
   autoPrecision: number | null;
+  autoRecall: number | null;
   brierScore: number;
   expectedCalibrationError: number;
 }
@@ -24,11 +32,18 @@ export function evaluateMatcher(
     return {
       examples: 0, top1Accuracy: 0,
       recallAtK: Object.fromEntries(recallKs.map((k) => [k, 0])),
-      autoCoverage: 0, autoPrecision: null, brierScore: 0, expectedCalibrationError: 0,
+      truePositives: 0, falsePositives: 0, trueNegatives: 0, falseNegatives: 0,
+      falsePositiveRate: 0, falseNegativeRate: 0,
+      autoCoverage: 0, reviewRate: 0, autoPrecision: null, autoRecall: null,
+      brierScore: 0, expectedCalibrationError: 0,
     };
   }
 
   const auto = predictions.filter((prediction) => prediction.autoMatched);
+  const truePositives = predictions.filter((prediction) => prediction.autoMatched && prediction.correct).length;
+  const falsePositives = predictions.filter((prediction) => prediction.autoMatched && !prediction.correct).length;
+  const trueNegatives = predictions.filter((prediction) => !prediction.autoMatched && !prediction.correct).length;
+  const falseNegatives = predictions.filter((prediction) => !prediction.autoMatched && prediction.correct).length;
   return {
     examples: predictions.length,
     top1Accuracy: mean(predictions.map((prediction) => prediction.correct ? 1 : 0)),
@@ -36,8 +51,16 @@ export function evaluateMatcher(
       k,
       mean(predictions.map((prediction) => prediction.rankOfCorrect != null && prediction.rankOfCorrect <= k ? 1 : 0)),
     ])),
+    truePositives,
+    falsePositives,
+    trueNegatives,
+    falseNegatives,
+    falsePositiveRate: ratio(falsePositives, falsePositives + trueNegatives),
+    falseNegativeRate: ratio(falseNegatives, falseNegatives + truePositives),
     autoCoverage: auto.length / predictions.length,
+    reviewRate: 1 - auto.length / predictions.length,
     autoPrecision: auto.length === 0 ? null : mean(auto.map((prediction) => prediction.correct ? 1 : 0)),
+    autoRecall: truePositives + falseNegatives === 0 ? null : ratio(truePositives, truePositives + falseNegatives),
     brierScore: mean(predictions.map((prediction) =>
       (clamp(prediction.score) - (prediction.correct ? 1 : 0)) ** 2,
     )),
@@ -118,4 +141,5 @@ function calibrationError(predictions: LabelledPrediction[], binCount: number): 
 function mean(values: number[]): number {
   return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
 }
+function ratio(numerator: number, denominator: number): number { return denominator === 0 ? 0 : numerator / denominator; }
 function clamp(value: number): number { return Math.max(0, Math.min(1, value)); }

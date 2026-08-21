@@ -9,6 +9,7 @@ import {
 import { log } from '@/lib/logger';
 import { assignGlobally } from '@/lib/services/global-assignment';
 import { addCandidateFrequencies, candidateDateWindow } from '@/lib/services/document-ingestion';
+import { serializeStatusDetails, STATUS_REASON } from '@/lib/services/document-status-reason';
 
 export interface RematchScope {
   clientId?: number;
@@ -100,6 +101,13 @@ export async function rematchUnmatched(
   for (const plan of plans) {
     let result = plan.result;
     if (result.outcome === 'UNMATCHED') {
+      await db.document.update({
+        where: { id: plan.documentId },
+        data: {
+          statusReason: result.diagnostics?.reason ?? STATUS_REASON.NO_SCOPED_TRANSACTIONS,
+          statusDetails: serializeStatusDetails(result.diagnostics),
+        },
+      });
       results.push({ documentId: plan.documentId, outcome: 'UNMATCHED', candidates: 0 });
       continue;
     }
@@ -134,7 +142,14 @@ export async function rematchUnmatched(
             decidedAt: new Date(),
           },
         });
-        await tx.document.update({ where: { id: plan.documentId }, data: { status: 'MATCHED' } });
+        await tx.document.update({
+          where: { id: plan.documentId },
+          data: {
+            status: 'MATCHED',
+            statusReason: STATUS_REASON.AUTO_MATCHED_AFTER_REMATCH,
+            statusDetails: null,
+          },
+        });
       } else {
         for (const [index, c] of result.candidates.entries()) {
           await tx.documentMatch.create({
@@ -152,7 +167,16 @@ export async function rematchUnmatched(
         }
         await tx.document.update({
           where: { id: plan.documentId },
-          data: { status: 'NEEDS_REVIEW', reviewReason: 'REMATCH_REVIEW' },
+          data: {
+            status: 'NEEDS_REVIEW',
+            reviewReason: STATUS_REASON.REMATCH_REVIEW,
+            statusReason: STATUS_REASON.REMATCH_REVIEW,
+            statusDetails: serializeStatusDetails({
+              scopedCandidateCount: result.candidates.length,
+              displayedCandidateCount: result.candidates.length,
+              topScore: result.candidates[0]?.confidence ?? null,
+            }),
+          },
         });
       }
     });
